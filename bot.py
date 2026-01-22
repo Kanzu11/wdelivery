@@ -10,14 +10,12 @@ from telegram.ext import (
     CallbackQueryHandler, ContextTypes, filters
 )
 
-# Custom Modules
 import config
 import geofence
 import menus 
 import languages
 from keep_alive import keep_alive
 
-# Logging
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
@@ -63,29 +61,63 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             'current_cafe': None, 'location': None
         }
 
-    # Step 1: Language
+    # 1. Choose Language
     if not user_data[chat_id]['lang']:
         keyboard = ReplyKeyboardMarkup([['🇺🇸 English', '🇪🇹 አማርኛ']], resize_keyboard=True, one_time_keyboard=True)
         await update.message.reply_text(languages.TEXTS['am']['choose_lang'], reply_markup=keyboard)
         return
 
-    # Admin Panel
+    # Admin Help
     if is_admin(update):
         await update.message.reply_text("👑 Admin: /open, /close, /auto, /broadcast")
 
-    # Step 2: Check Status
+    # 2. Check Open/Closed
     if not is_open():
         await update.message.reply_text(t(chat_id, 'closed'))
         return
 
-    # Step 3: Phone
+    # 3. Check Phone
     if not user_data[chat_id].get("phone"):
         btn_text = t(chat_id, 'btn_phone')
         kb = ReplyKeyboardMarkup([[KeyboardButton(btn_text, request_contact=True)]], resize_keyboard=True, one_time_keyboard=True)
         await update.message.reply_text(t(chat_id, 'ask_phone'), reply_markup=kb)
         return
 
-    await show_cafe_menu(update)
+    await show_main_menu(update)
+
+async def show_main_menu(update: Update):
+    chat_id = update.effective_chat.id
+    
+    # Reset Order State
+    user_data[chat_id]['current_cafe'] = None
+    user_data[chat_id]['awaiting_location'] = False
+    
+    # Build Menu: Cafes + Profile Button
+    cafés = list(menus.CAFES.keys())
+    menu_buttons = [[c] for c in cafés]
+    
+    # Add "Profile" button at the bottom
+    menu_buttons.append([t(chat_id, 'btn_profile')]) 
+    
+    kb = ReplyKeyboardMarkup(menu_buttons, resize_keyboard=True)
+    await update.message.reply_text(t(chat_id, 'choose_cafe'), reply_markup=kb)
+
+async def show_profile(update: Update):
+    chat_id = update.effective_chat.id
+    data = user_data[chat_id]
+    
+    phone = data.get('phone', 'N/A')
+    loc_status = t(chat_id, 'location_set') if data.get('location') else t(chat_id, 'location_not_set')
+    
+    msg = t(chat_id, 'profile_header').format(phone, loc_status)
+    
+    # Profile Actions
+    kb = ReplyKeyboardMarkup([
+        [t(chat_id, 'btn_switch_lang'), t(chat_id, 'btn_edit_phone')],
+        [t(chat_id, 'btn_back')]
+    ], resize_keyboard=True)
+    
+    await update.message.reply_text(msg, parse_mode='Markdown', reply_markup=kb)
 
 async def set_language(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -95,31 +127,22 @@ async def set_language(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         user_data.setdefault(chat_id, {})['lang'] = 'en'
     elif "አማርኛ" in text:
         user_data.setdefault(chat_id, {})['lang'] = 'am'
-    else:
-        return 
-
+    
     await update.message.reply_text(t(chat_id, 'welcome'))
-    await start(update, ctx)
+    await show_main_menu(update)
 
 async def contact(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     if update.message.contact:
         user_data.setdefault(chat_id, {})['phone'] = update.message.contact.phone_number
         await update.message.reply_text(t(chat_id, 'phone_saved'))
-        await start(update, ctx)
-
-async def show_cafe_menu(update: Update):
-    chat_id = update.effective_chat.id
-    cafés = list(menus.CAFES.keys())
-    kb = ReplyKeyboardMarkup([[c] for c in cafés], resize_keyboard=True)
-    user_data[chat_id]['current_cafe'] = None
-    user_data[chat_id]['awaiting_location'] = False
-    await update.message.reply_text(t(chat_id, 'choose_cafe'), reply_markup=kb)
+        await show_main_menu(update)
 
 async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     text = update.message.text
     
+    # Handle Language Setup
     if text in ['🇺🇸 English', '🇪🇹 አማርኛ']:
         await set_language(update, ctx)
         return
@@ -131,17 +154,33 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     lang = user_data[chat_id]['lang']
     data = user_data[chat_id]
 
+    # --- Navigation Buttons ---
     if text == t(chat_id, 'btn_back'):
-        await show_cafe_menu(update)
+        await show_main_menu(update)
         return
     
+    if text == t(chat_id, 'btn_profile'):
+        await show_profile(update)
+        return
+
+    if text == t(chat_id, 'btn_switch_lang'):
+        data['lang'] = None # Reset lang to force choice
+        await start(update, ctx)
+        return
+
+    if text == t(chat_id, 'btn_edit_phone'):
+        data['phone'] = None # Reset phone to force ask
+        await start(update, ctx)
+        return
+
     if text == t(chat_id, 'btn_cancel'):
         data['orders'] = {}
         data['current_cafe'] = None
         await update.message.reply_text(t(chat_id, 'order_cancelled'))
-        await show_cafe_menu(update)
+        await show_main_menu(update)
         return
 
+    # --- Cafe & Order Logic ---
     if not data.get("current_cafe"):
         if text in menus.CAFES:
             data['current_cafe'] = text
@@ -184,6 +223,8 @@ async def show_cafe_items(update: Update, cafe_name: str):
 async def request_location(update: Update):
     chat_id = update.effective_chat.id
     data = user_data[chat_id]
+    
+    # Calculate Total
     total = 39
     lines = []
     for (cafe, item), qty in data['orders'].items():
@@ -194,11 +235,16 @@ async def request_location(update: Update):
     summary = "\n".join(lines)
     msg = f"{summary}\n\n{t(chat_id, 'delivery_fee')}: 39 ETB\n*{t(chat_id, 'total')}: {total} ETB*"
     
-    kb = ReplyKeyboardMarkup(
-        [[KeyboardButton(t(chat_id, 'btn_location'), request_location=True)], 
-         [t(chat_id, 'btn_cancel'), t(chat_id, 'btn_back')]],
-        resize_keyboard=True, one_time_keyboard=True
-    )
+    # Check if we already have location saved in profile
+    buttons = [[KeyboardButton(t(chat_id, 'btn_location'), request_location=True)]]
+    
+    # Use Saved Location button (Optional feature)
+    # if data.get('location'): buttons.append(["📍 Use Saved Location"])
+
+    buttons.append([t(chat_id, 'btn_cancel'), t(chat_id, 'btn_back')])
+    
+    kb = ReplyKeyboardMarkup(buttons, resize_keyboard=True, one_time_keyboard=True)
+    
     data['awaiting_location'] = True
     await update.message.reply_text(msg + "\n\n" + t(chat_id, 'ask_location'), reply_markup=kb, parse_mode="Markdown")
 
@@ -215,68 +261,70 @@ async def location(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(t(chat_id, 'location_error'))
         return
 
-    # --- NEW ORDER NUMBER FORMAT: #100 - #999 ---
-    order_id = f"#{random.randint(100, 999)}"
-    
-    mapslink = f"https://www.google.com/maps?q={lat},{lon}"
-    cart_summary = "\n".join([f"{i} ({c})" for (c, i), q in data['orders'].items()])
-    
-    admin_msg = f"""📦 *NEW ORDER* `{order_id}`
-👤 {update.effective_user.full_name} (@{update.effective_user.username})
-📞 {data['phone']}
-📍 [Map Location]({mapslink})
-🛒 {cart_summary}"""
+    # Save location to profile
+    data['location'] = {'lat': lat, 'lon': lon}
 
-    # Buttons for Admin
+    # --- NEW: 8-DIGIT ORDER ID ---
+    # Generates a number like #23637283
+    order_id = f"#{random.randint(10000000, 99999999)}"
+    
+    cart_summary = "\n".join([f"{i} ({c})" for (c, i), q in data['orders'].items()])
+    customer_info = f"👤 {update.effective_user.full_name}\n📞 {data['phone']}\n@{update.effective_user.username}"
+
+    # --- ADMIN: SEND MAP SEPARATELY ---
+    # 1. Send the Map (Native Telegram Location)
+    await ctx.bot.send_location(chat_id=config.CHANNEL_ID, latitude=lat, longitude=lon)
+
+    # 2. Send the Text Details + Buttons
+    admin_msg = f"""📦 *ORDER {order_id}*
+    
+{customer_info}
+
+🛒 *ITEMS:*
+{cart_summary}
+
+💵 *Total (+Fee):* calculated...
+"""
     kb = InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ Accept", callback_data=f"accept_{chat_id}_{order_id}"),
         InlineKeyboardButton("❌ Decline", callback_data=f"decline_{chat_id}_{order_id}")
     ]])
     await ctx.bot.send_message(config.CHANNEL_ID, admin_msg, parse_mode='Markdown', reply_markup=kb)
 
+    # User Confirmation
     await update.message.reply_text(t(chat_id, 'order_sent').format(order_id), parse_mode="Markdown")
+    
+    # Cleanup
     data['orders'] = {}
     data['current_cafe'] = None
-    await show_cafe_menu(update)
+    await show_main_menu(update)
 
-# --- THIS WAS THE BROKEN PART. IT IS FIXED NOW. ---
 async def accept_or_decline(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer() # Tell Telegram we received the click
-    
+    await query.answer()
     data = query.data
-    # data format: accept_CHATID_ORDERID
-    if not (data.startswith("accept_") or data.startswith("decline_")):
-        return
+    
+    if not (data.startswith("accept_") or data.startswith("decline_")): return
 
     try:
         action, uid_str, order_id = data.split("_")
         uid = int(uid_str)
-    except:
-        return
+    except: return
 
     msg = query.message
     admin_name = query.from_user.full_name
 
-    # Prevent double clicking
-    if "✅" in msg.text or "❌" in msg.text:
-        return
+    if "✅" in msg.text or "❌" in msg.text: return
 
-    # Update Admin Message
     if action == "accept":
         new_text = msg.text + f"\n\n✅ Accepted by {admin_name}"
-        await query.message.edit_text(new_text, reply_markup=None) # Remove buttons
-        
-        # Send Message to User (in their language)
-        user_text = t(uid, 'order_accepted').format(order_id)
-        await ctx.bot.send_message(uid, user_text, parse_mode="Markdown")
+        await query.message.edit_text(new_text, reply_markup=None)
+        await ctx.bot.send_message(uid, t(uid, 'order_accepted').format(order_id), parse_mode="Markdown")
         
     elif action == "decline":
         new_text = msg.text + f"\n\n❌ Declined by {admin_name}"
         await query.message.edit_text(new_text, reply_markup=None)
-        
-        user_text = t(uid, 'order_declined').format(order_id)
-        await ctx.bot.send_message(uid, user_text, parse_mode="Markdown")
+        await ctx.bot.send_message(uid, t(uid, 'order_declined').format(order_id), parse_mode="Markdown")
 
 async def admin_broadcast(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update): return
@@ -306,7 +354,6 @@ def main():
     keep_alive()
     app = ApplicationBuilder().token(config.BOT_TOKEN).build()
 
-    # Handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("broadcast", admin_broadcast))
     app.add_handler(CommandHandler(["open", "close", "auto"], admin_control))
@@ -314,8 +361,6 @@ def main():
     app.add_handler(MessageHandler(filters.CONTACT, contact))
     app.add_handler(MessageHandler(filters.LOCATION, location))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    
-    # REQUIRED: Add the callback handler for buttons to work!
     app.add_handler(CallbackQueryHandler(accept_or_decline))
     
     print("Bot is running...")
