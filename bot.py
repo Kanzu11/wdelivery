@@ -1,5 +1,6 @@
-import logging, datetime, asyncio
-from aiohttp import web
+import logging
+import datetime
+import uuid
 from telegram import (
     Update, KeyboardButton, ReplyKeyboardMarkup,
     InlineKeyboardButton, InlineKeyboardMarkup, Contact
@@ -8,8 +9,13 @@ from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
     CallbackQueryHandler, ContextTypes, filters
 )
-import config, geofence, menus, uuid
+# Make sure these modules exist in your folder
+import config
+import geofence
+import menus 
+from keep_alive import keep_alive  # Import the web server
 
+# Enable logging
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
@@ -21,10 +27,13 @@ ADMIN_USERNAME = "kanzedin"  # Admin username
 
 def is_admin(update: Update) -> bool:
     """Check if the user is the admin"""
+    if not update.effective_user:
+        return False
     username = update.effective_user.username
     return username and username.lower() == ADMIN_USERNAME.lower()
 
 def is_open() -> bool:
+    # Adjust UTC time to EAT (UTC+3)
     now = datetime.datetime.utcnow() + datetime.timedelta(hours=3)
     return config.OPEN_HOUR <= now.hour < config.CLOSE_HOUR
 
@@ -47,6 +56,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Sorry, we're closed. Open daily 12 AM–12 PM .")
         return
 
+    # Check if we already have the phone number
     if not user_data[chat_id].get("phone"):
         await update.message.reply_text(
             "📞 Please share your phone number to continue:",
@@ -62,13 +72,22 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def show_cafe_menu(update: Update):
     cafés = list(menus.CAFES.keys())
-    keyboard = ReplyKeyboardMarkup([[c] for c in cafés], resize_keyboard=True)
-    await update.message.reply_text("Choose a café:", reply_markup=keyboard)
+    # Arrange buttons in rows of 2 for better look
+    keyboard_buttons = [[c] for c in cafés]
+    keyboard = ReplyKeyboardMarkup(keyboard_buttons, resize_keyboard=True)
+    
     chat_id = update.effective_chat.id
-    user_data[chat_id]['current_cafe'] = None
-    user_data[chat_id]['awaiting_location'] = False
+    # Reset current cafe selection
+    if chat_id in user_data:
+        user_data[chat_id]['current_cafe'] = None
+        user_data[chat_id]['awaiting_location'] = False
+        
+    await update.message.reply_text("Choose a café:", reply_markup=keyboard)
 
 async def contact(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not update.message.contact:
+        return
+        
     contact: Contact = update.message.contact
     chat_id = update.effective_chat.id
     user_data.setdefault(chat_id, {'orders': {}, 'current_cafe': None})
@@ -99,7 +118,13 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     if text == "🔙 Back":
-        await show_cafe_menu(update)
+        if data.get('current_cafe'):
+            # If inside a cafe menu, go back to cafe list
+            data['current_cafe'] = None
+            await show_cafe_menu(update)
+        else:
+            # If at cafe list, just show list again (or main menu if you had one)
+            await show_cafe_menu(update)
         return
 
     if text == "❌ Cancel Order":
@@ -110,12 +135,14 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await show_cafe_menu(update)
         return
 
+    # If user selects a Cafe
     if not data.get("current_cafe"):
         if text in menus.CAFES:
             data['current_cafe'] = text
             await show_cafe_items(update, text)
         return
 
+    # If user presses "Done"
     if text == "✅️ Done":
         if not data['orders']:
             await update.message.reply_text("❗ You haven't added any items yet.")
@@ -148,6 +175,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         data['awaiting_location'] = True
         return
 
+    # If user selects an Item
     try:
         if " — " not in text:
             await update.message.reply_text("❌ This item can't be selected.")
@@ -155,9 +183,15 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
         item, _, _ = text.partition(" — ")
         current_cafe = data['current_cafe']
-        if item not in menus.CAFES[current_cafe] or menus.CAFES[current_cafe][item] is None:
-            await update.message.reply_text("❌ This item can't be selected.")
+        
+        # Verify item belongs to current cafe
+        if current_cafe not in menus.CAFES or item not in menus.CAFES[current_cafe]:
+            await update.message.reply_text("❌ Item not found in this café.")
             return
+            
+        if menus.CAFES[current_cafe][item] is None:
+             await update.message.reply_text("❌ This is a header, not an item.")
+             return
 
         key = (current_cafe, item)
         data['orders'][key] = data['orders'].get(key, 0) + 1
@@ -178,7 +212,7 @@ async def show_cafe_items(update: Update, cafe_name: str):
 
     keyboard += [["✅️ Done"], ["❌ Cancel Order"], ["🔙 Back"]]
 
-    await update.message.reply_text("Select items:", reply_markup=ReplyKeyboardMarkup(
+    await update.message.reply_text(f"Menu for {cafe_name}:", reply_markup=ReplyKeyboardMarkup(
         keyboard, resize_keyboard=True
     ))
 
@@ -218,7 +252,8 @@ async def location(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     customer = update.effective_user.full_name
     uname = update.effective_user.username or "N/A"
     phone = data.get("phone", "N/A")
-    mapslink = f"https://maps.google.com/?q={update.message.location.latitude},{update.message.location.longitude}"
+    # Updated Maps link for better compatibility
+    mapslink = f"https://www.google.com/maps/search/?api=1&query={update.message.location.latitude},{update.message.location.longitude}"
 
     await ctx.bot.send_message(
         config.CHANNEL_ID,
@@ -262,8 +297,8 @@ async def accept_or_decline(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        action, uid, order_id = data.split("_")
-        uid = int(uid)
+        action, uid_str, order_id = data.split("_")
+        uid = int(uid_str)
     except:
         logger.error(f"Invalid callback data: {data}")
         return
@@ -290,7 +325,7 @@ async def broadcast(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ You don't have permission to use this command.")
         return
     
-    # Get the message to broadcast (everything after /broadcast)
+    # Get the message to broadcast
     message_text = update.message.text
     if message_text.startswith("/broadcast"):
         broadcast_msg = message_text.replace("/broadcast", "").strip()
@@ -301,7 +336,6 @@ async def broadcast(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
             return
     
-    # Send to all users
     total_users = len(user_data)
     success_count = 0
     failed_count = 0
@@ -340,27 +374,17 @@ async def stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
-async def keep_alive(request):
-    return web.Response(text="Bot is running ✅")
-
-def run_keep_alive_server():
-    app = web.Application()
-    app.router.add_get("/", keep_alive)
-    runner = web.AppRunner(app)
-
-    async def start_server():
-        await runner.setup()
-        site = web.TCPSite(runner, "0.0.0.0", 8080)
-        await site.start()
-        print("Keep-alive server running on port 8080")
-
-    asyncio.get_event_loop().create_task(start_server())
-
 def error_handler(update: object, ctx: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Error: {ctx.error}", exc_info=True)
 
 def main():
+    # 1. Start the Flask keep-alive server in a separate thread
+    keep_alive()
+
+    # 2. Build the Telegram Application
     app = ApplicationBuilder().token(config.BOT_TOKEN).build()
+
+    # 3. Add Handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("broadcast", broadcast))
     app.add_handler(CommandHandler("stats", stats))
@@ -368,9 +392,14 @@ def main():
     app.add_handler(MessageHandler(filters.LOCATION, location))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(CallbackQueryHandler(accept_or_decline))
+    
+    # 4. Error handling
     app.add_error_handler(error_handler)
-    run_keep_alive_server()
+
+    # 5. Start Polling
+    print("Bot is running...")
     app.run_polling()
 
 if __name__ == "__main__":
     main()
+
