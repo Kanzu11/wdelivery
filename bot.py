@@ -10,14 +10,12 @@ from telegram.ext import (
     CallbackQueryHandler, ContextTypes, filters
 )
 
-# Custom Modules
 import config
 import geofence
 import menus 
 import languages
 from keep_alive import keep_alive
 
-# Logging
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
@@ -32,7 +30,9 @@ ADMIN_USERNAME = "kanzedin"
 SERVICE_MODE = 'AUTO' 
 
 # --- HELPERS ---
+
 def get_user_lang(chat_id):
+    # Default to English if user/lang not found
     return user_data.get(chat_id, {}).get('lang', 'en')
 
 def t(chat_id, key):
@@ -50,10 +50,20 @@ def is_open() -> bool:
     return config.OPEN_HOUR <= now.hour < config.CLOSE_HOUR
 
 async def ask_for_phone(update, chat_id):
-    """Helper to send the phone request message"""
+    """Forces user to share phone number"""
     btn_text = t(chat_id, 'btn_phone')
     kb = ReplyKeyboardMarkup([[KeyboardButton(btn_text, request_contact=True)]], resize_keyboard=True, one_time_keyboard=True)
     await update.message.reply_text(t(chat_id, 'ask_phone'), reply_markup=kb)
+
+async def check_user_exists(update, chat_id):
+    """Restores user profile if bot restarted (RAM cleared)"""
+    if chat_id not in user_data:
+        user_data[chat_id] = {
+            'lang': None, 'phone': None, 'orders': {}, 
+            'current_cafe': None, 'location': None
+        }
+        return False # User was just created/reset
+    return True # User exists
 
 # --- HANDLERS ---
 
@@ -63,12 +73,8 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if user.username:
         username_map[user.username.lower()] = chat_id
 
-    # Initialize Profile
-    if chat_id not in user_data:
-        user_data[chat_id] = {
-            'lang': None, 'phone': None, 'orders': {}, 
-            'current_cafe': None, 'location': None
-        }
+    # Ensure profile exists
+    await check_user_exists(update, chat_id)
 
     # 1. Language Selection (Always First)
     if not user_data[chat_id]['lang']:
@@ -86,7 +92,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(t(chat_id, 'closed'))
         return
 
-    # 3. Check Phone (Strict)
+    # 3. Check Phone (STRICT)
     if not user_data[chat_id].get("phone"):
         await ask_for_phone(update, chat_id)
         return
@@ -97,14 +103,16 @@ async def set_language(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     text = update.message.text
 
+    await check_user_exists(update, chat_id)
+
     if "English" in text:
-        user_data.setdefault(chat_id, {})['lang'] = 'en'
+        user_data[chat_id]['lang'] = 'en'
     elif "አማርኛ" in text:
-        user_data.setdefault(chat_id, {})['lang'] = 'am'
+        user_data[chat_id]['lang'] = 'am'
     
     await update.message.reply_text(t(chat_id, 'welcome'))
     
-    # After language is set, immediately check phone
+    # IMMEDIATE PHONE CHECK
     if not user_data[chat_id].get("phone"):
         await ask_for_phone(update, chat_id)
     else:
@@ -112,8 +120,10 @@ async def set_language(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def contact(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
+    await check_user_exists(update, chat_id)
+    
     if update.message.contact:
-        user_data.setdefault(chat_id, {})['phone'] = update.message.contact.phone_number
+        user_data[chat_id]['phone'] = update.message.contact.phone_number
         await update.message.reply_text(t(chat_id, 'phone_saved'))
         await show_main_menu(update)
 
@@ -121,23 +131,25 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     text = update.message.text
     
-    # 1. Handle Language Setup (Exception: Allow language choice)
+    await check_user_exists(update, chat_id)
+
+    # 1. Handle Language Setup
     if text in ['🇺🇸 English', '🇪🇹 አማርኛ']:
         await set_language(update, ctx)
         return
 
-    # 2. Safety Check: Ensure User Exists/Has Language
-    if chat_id not in user_data or not user_data[chat_id].get('lang'):
+    # 2. Safety: Ensure Lang is set
+    if not user_data[chat_id].get('lang'):
         await start(update, ctx)
         return
 
     # 3. STRICT GATEKEEPER: Check Phone
-    # If phone is missing, BLOCK ALL other text inputs and ask for phone
+    # If phone is missing, BLOCK ALL ACTIONS and ask for phone
     if not user_data[chat_id].get("phone"):
         await ask_for_phone(update, chat_id)
         return
 
-    # --- Only proceed below if phone is known ---
+    # --- Only proceed if phone is known ---
 
     lang = user_data[chat_id]['lang']
     data = user_data[chat_id]
@@ -226,6 +238,11 @@ async def request_location(update: Update):
     chat_id = update.effective_chat.id
     data = user_data[chat_id]
     
+    # DOUBLE CHECK PHONE BEFORE ASKING LOCATION
+    if not data.get("phone"):
+        await ask_for_phone(update, chat_id)
+        return
+
     total = 39
     lines = []
     for (cafe, item), qty in data['orders'].items():
@@ -263,12 +280,19 @@ async def show_profile(update: Update):
 
 async def location(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
+    
+    # 1. Ensure Data Exists (Fix for bot restart)
+    exists = await check_user_exists(update, chat_id)
+    if not exists:
+        # If user data didn't exist, we just created it empty.
+        # So we MUST ask for phone.
+        await ask_for_phone(update, chat_id)
+        return
+
     data = user_data.get(chat_id)
     
-    # Safety checks
-    if not data: return
-    
-    # STRICT PHONE CHECK IN LOCATION TOO
+    # 2. STRICT PHONE CHECK (The Fix for "Phone: None")
+    # Even if data exists, check if phone is None
     if not data.get("phone"):
         await ask_for_phone(update, chat_id)
         return
@@ -296,9 +320,10 @@ async def location(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     
     cart_summary = "\n".join(cart_items)
     
+    # Phone is guaranteed to exist here now
     customer_info = (
         f"👤 {update.effective_user.full_name}\n"
-        f"📞 {data.get('phone', 'No Phone')}\n"
+        f"📞 {data['phone']}\n"
         f"@{update.effective_user.username or 'NoUsername'}"
     )
 
