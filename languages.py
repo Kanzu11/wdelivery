@@ -20,12 +20,15 @@ TEXTS = {
         'btn_done': "✅ Done",
         'btn_cancel': "❌ Cancel Order",
         'btn_back': "🔙 Back",
-        'order_sent': "✅ Your order has been sent! Wait for confirmation.\n📦 Order ID: `{}`",
+        'order_sent': "✅ Order sent! Wait for confirmation.\n📦 Order No: `{}`",
         'order_cancelled': "❌ Order cancelled.",
         'location_error': "❌ Delivery is only available within Werabe city limits.",
         'admin_broadcast': "📢 Announcement:\n\n{}",
-        'admin_dm': "🔔 Notification:\n\n{}",
-        'promo': "📢 We are open! Order now!"
+        
+        # --- NEW MESSAGES FOR ACCEPT/DECLINE ---
+        'order_accepted': "✅ Your Order `{}` has been ACCEPTED! 🚚\nIt will be delivered shortly.",
+        'order_declined': "❌ Your Order `{}` was DECLINED.\nPlease contact support or try again.",
+        'admin_processed': "\n\n👮 Processed by: {}" 
     },
     'am': {
         'choose_lang': "እባክዎ ቋንቋ ይምረጡ / Please choose language:",
@@ -50,10 +53,14 @@ TEXTS = {
         'order_cancelled': "❌ ትዕዛዝ ተሰርዟል።",
         'location_error': "❌ ዴሊቨሪ የምንሰጠው በወራቤ ከተማ ውስጥ ብቻ ነው።",
         'admin_broadcast': "📢 ማስታወቂያ፡\n\n{}",
-        'admin_dm': "🔔 መልዕክት፡\n\n{}",
-        'promo': "📢 ክፍት ነን! አሁኑኑ ይዘዙ!"
+
+        # --- NEW MESSAGES FOR ACCEPT/DECLINE ---
+        'order_accepted': "✅ ትዕዛዝ ቁጥር `{}` ተቀባይነት አግኝቷል! 🚚\nበቅርቡ ይደርስዎታል።",
+        'order_declined': "❌ ትዕዛዝ ቁጥር `{}` ውድቅ ተደርጓል።\nእባክዎ ይደውሉልን።",
+        'admin_processed': "\n\n👮 አስተናጋጅ: {}"
     }
 }
 
 def get_text(lang, key):
     return TEXTS.get(lang, TEXTS['en']).get(key, key)
+
