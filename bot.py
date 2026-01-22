@@ -9,11 +9,11 @@ from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
     CallbackQueryHandler, ContextTypes, filters
 )
-# Make sure these modules exist in your folder
+# Make sure these files exist in your folder
 import config
 import geofence
 import menus 
-from keep_alive import keep_alive  # Import the web server
+from keep_alive import keep_alive
 
 # Enable logging
 logging.basicConfig(
@@ -22,8 +22,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-user_data = {}
-ADMIN_USERNAME = "kanzedin"  # Admin username
+# --- GLOBAL VARIABLES ---
+user_data = {}           # Stores cart, phone, etc.
+username_map = {}        # Maps "username" -> chat_id for DMs
+ADMIN_USERNAME = "kanzedin"
+
+# Service Status: 'AUTO' (time based), 'OPEN' (force open), 'CLOSED' (force closed)
+SERVICE_MODE = 'AUTO' 
+
+# --- HELPER FUNCTIONS ---
 
 def is_admin(update: Update) -> bool:
     """Check if the user is the admin"""
@@ -32,31 +39,101 @@ def is_admin(update: Update) -> bool:
     username = update.effective_user.username
     return username and username.lower() == ADMIN_USERNAME.lower()
 
+def update_user_info(update: Update):
+    """Save chat_id and username for reverse lookup"""
+    user = update.effective_user
+    chat_id = update.effective_chat.id
+    if user and user.username:
+        # Save username without @ (lowercase for consistency)
+        clean_name = user.username.lower().replace("@", "")
+        username_map[clean_name] = chat_id
+
 def is_open() -> bool:
-    # Adjust UTC time to EAT (UTC+3)
-    now = datetime.datetime.utcnow() + datetime.timedelta(hours=3)
-    return config.OPEN_HOUR <= now.hour < config.CLOSE_HOUR
+    """Check if shop is open based on Manual Mode or Time"""
+    global SERVICE_MODE
+    
+    if SERVICE_MODE == 'OPEN':
+        return True
+    elif SERVICE_MODE == 'CLOSED':
+        return False
+    else:
+        # AUTO mode: Check time (UTC+3 for EAT)
+        now = datetime.datetime.utcnow() + datetime.timedelta(hours=3)
+        return config.OPEN_HOUR <= now.hour < config.CLOSE_HOUR
+
+# --- ADMIN COMMANDS ---
+
+async def admin_dm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Usage: /dm @username Your message here"""
+    if not is_admin(update):
+        return
+
+    if not ctx.args or len(ctx.args) < 2:
+        await update.message.reply_text("❌ Usage: /dm <username> <message>")
+        return
+
+    target_username = ctx.args[0].lower().replace("@", "")
+    message_text = " ".join(ctx.args[1:])
+
+    target_chat_id = username_map.get(target_username)
+
+    if not target_chat_id:
+        await update.message.reply_text(f"❌ User @{target_username} has not started the bot yet.")
+        return
+
+    try:
+        await ctx.bot.send_message(target_chat_id, f"🔔 *Notification:*\n\n{message_text}", parse_mode="Markdown")
+        await update.message.reply_text(f"✅ Message sent to @{target_username}")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Failed to send: {e}")
+
+async def set_service_mode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """/open, /close, or /auto"""
+    if not is_admin(update):
+        return
+
+    global SERVICE_MODE
+    command = update.message.text.lower()
+
+    if "/open" in command:
+        SERVICE_MODE = 'OPEN'
+        await update.message.reply_text("🟢 Service is now FORCED OPEN.")
+    elif "/close" in command:
+        SERVICE_MODE = 'CLOSED'
+        await update.message.reply_text("🔴 Service is now FORCED CLOSED.")
+    elif "/auto" in command:
+        SERVICE_MODE = 'AUTO'
+        await update.message.reply_text("🕒 Service set to AUTO (Time-based).")
+
+# --- USER HANDLERS ---
 
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    update_user_info(update) # Save username
     chat_id = update.effective_chat.id
     user_data.setdefault(chat_id, {
         'orders': {}, 'phone': None, 'current_cafe': None, 'awaiting_location': False
     })
     
-    # Track user for admin stats
     if is_admin(update):
         await update.message.reply_text(
-            "👑 Admin mode activated!\n\n"
-            "Available commands:\n"
-            "/broadcast - Send message to all users\n"
-            "/stats - See total number of users"
+            "👑 *Admin Panel*\n\n"
+            "🎮 *Controls:*\n"
+            "/open - Force Open\n"
+            "/close - Force Close\n"
+            "/auto - Use Time Schedule\n"
+            "/dm @user msg - Send Direct Message\n"
+            "/broadcast msg - Send to ALL\n"
+            "/stats - View Users",
+            parse_mode="Markdown"
         )
 
     if not is_open():
-        await update.message.reply_text("Sorry, we're closed. Open daily 12 AM–12 PM .")
+        msg = "⛔ Currently Closed."
+        if SERVICE_MODE == 'AUTO':
+            msg += " Open daily 12 AM–12 PM."
+        await update.message.reply_text(msg)
         return
 
-    # Check if we already have the phone number
     if not user_data[chat_id].get("phone"):
         await update.message.reply_text(
             "📞 Please share your phone number to continue:",
@@ -72,12 +149,10 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def show_cafe_menu(update: Update):
     cafés = list(menus.CAFES.keys())
-    # Arrange buttons in rows of 2 for better look
     keyboard_buttons = [[c] for c in cafés]
     keyboard = ReplyKeyboardMarkup(keyboard_buttons, resize_keyboard=True)
     
     chat_id = update.effective_chat.id
-    # Reset current cafe selection
     if chat_id in user_data:
         user_data[chat_id]['current_cafe'] = None
         user_data[chat_id]['awaiting_location'] = False
@@ -85,6 +160,7 @@ async def show_cafe_menu(update: Update):
     await update.message.reply_text("Choose a café:", reply_markup=keyboard)
 
 async def contact(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    update_user_info(update)
     if not update.message.contact:
         return
         
@@ -96,14 +172,16 @@ async def contact(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await show_cafe_menu(update)
 
 async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    update_user_info(update) # Always update username mapping on text
     chat_id = update.effective_chat.id
     text = update.message.text
     data = user_data.setdefault(chat_id, {
         'orders': {}, 'phone': None, 'current_cafe': None, 'awaiting_location': False
     })
 
-    if not is_open():
-        await update.message.reply_text("⏰ Sorry, we're currently closed. Open daily 6 AM–6 PM EAT.")
+    # Check status (Allow admins to test even if closed)
+    if not is_open() and not is_admin(update):
+        await update.message.reply_text("⛔ Sorry, we are currently closed.")
         return
 
     if not data.get("phone"):
@@ -119,11 +197,9 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if text == "🔙 Back":
         if data.get('current_cafe'):
-            # If inside a cafe menu, go back to cafe list
             data['current_cafe'] = None
             await show_cafe_menu(update)
         else:
-            # If at cafe list, just show list again (or main menu if you had one)
             await show_cafe_menu(update)
         return
 
@@ -135,25 +211,22 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await show_cafe_menu(update)
         return
 
-    # If user selects a Cafe
     if not data.get("current_cafe"):
         if text in menus.CAFES:
             data['current_cafe'] = text
             await show_cafe_items(update, text)
         return
 
-    # If user presses "Done"
     if text == "✅️ Done":
         if not data['orders']:
-            await update.message.reply_text("❗ You haven't added any items yet.")
+            await update.message.reply_text("❗ Cart is empty.")
             return
 
         total = 39
         summary_by_cafe = {}
         for (cafe, item), qty in data['orders'].items():
             price = menus.CAFES[cafe].get(item)
-            if price is None:
-                continue
+            if price is None: continue
             subtotal = price * qty
             total += subtotal
             summary_by_cafe.setdefault(cafe, []).append(f"{item} × {qty} = {subtotal} ETB")
@@ -164,59 +237,52 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
         summary = "\n".join(summary_lines)
         await update.message.reply_text(
-            f"{summary}💵 *Total: {total} ETB*\n🚚 *Delivery fee: 39 ETB*\n\n📍 Please share your location to finalize the order:",
+            f"{summary}💵 *Total: {total} ETB*\n🚚 *Delivery fee: 39 ETB*\n\n📍 Share location to finalize:",
             parse_mode="Markdown",
             reply_markup=ReplyKeyboardMarkup(
                 [[KeyboardButton("Share location", request_location=True)], ["❌ Cancel Order", "🔙 Back"]],
-                resize_keyboard=True,
-                one_time_keyboard=True
+                resize_keyboard=True, one_time_keyboard=True
             )
         )
         data['awaiting_location'] = True
         return
 
-    # If user selects an Item
     try:
         if " — " not in text:
-            await update.message.reply_text("❌ This item can't be selected.")
+            await update.message.reply_text("❌ Select an item from the menu.")
             return
 
         item, _, _ = text.partition(" — ")
         current_cafe = data['current_cafe']
         
-        # Verify item belongs to current cafe
         if current_cafe not in menus.CAFES or item not in menus.CAFES[current_cafe]:
-            await update.message.reply_text("❌ Item not found in this café.")
+            await update.message.reply_text("❌ Item not found.")
             return
-            
+
         if menus.CAFES[current_cafe][item] is None:
-             await update.message.reply_text("❌ This is a header, not an item.")
+             await update.message.reply_text("❌ That is a category header.")
              return
 
         key = (current_cafe, item)
         data['orders'][key] = data['orders'].get(key, 0) + 1
-        await update.message.reply_text(f"🛒 Added to cart: {item} × {data['orders'][key]}.\n✅️ Press 'Done' when ready.")
+        await update.message.reply_text(f"🛒 Added: {item} × {data['orders'][key]}\n✅️ Press 'Done' when ready.")
     except Exception:
         logger.error("Error processing item", exc_info=True)
-        await update.message.reply_text("❌ Unexpected format.")
+        await update.message.reply_text("❌ Error processing item.")
 
 async def show_cafe_items(update: Update, cafe_name: str):
     menu = menus.CAFES[cafe_name]
     keyboard = []
-
     for item, price in menu.items():
         if price is None:
-            keyboard.append([item])  # header
+            keyboard.append([item])
         else:
             keyboard.append([f"{item} — {price} ETB"])
-
     keyboard += [["✅️ Done"], ["❌ Cancel Order"], ["🔙 Back"]]
-
-    await update.message.reply_text(f"Menu for {cafe_name}:", reply_markup=ReplyKeyboardMarkup(
-        keyboard, resize_keyboard=True
-    ))
+    await update.message.reply_text(f"Menu for {cafe_name}:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
 
 async def location(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    update_user_info(update)
     uid = update.effective_chat.id
     data = user_data.get(uid)
     if not data or not data.get("awaiting_location"):
@@ -224,8 +290,8 @@ async def location(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     data['awaiting_location'] = False
 
-    if not is_open():
-        await update.message.reply_text("⏰ Sorry, we're currently closed. Open daily 6 AM–6 PM EAT.")
+    if not is_open() and not is_admin(update):
+        await update.message.reply_text("⛔ Sorry, we closed while you were ordering.")
         return
 
     if not geofence.in_werabe(update.message.location.latitude, update.message.location.longitude):
@@ -238,21 +304,17 @@ async def location(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     for (cafe, item), qty in data['orders'].items():
         price = menus.CAFES[cafe].get(item)
-        if price is None:
-            continue
+        if price is None: continue
         subtotal = price * qty
         total += subtotal
         summary_by_cafe.setdefault(cafe, []).append(f"{item} × {qty} = {subtotal} ETB")
 
-    summary_lines = []
-    for cafe, lines in summary_by_cafe.items():
-        summary_lines.append(f"🧾 *{cafe}*\n" + "\n".join(lines) + "\n")
-
+    summary_lines = [f"🧾 *{cafe}*\n" + "\n".join(lines) + "\n" for cafe, lines in summary_by_cafe.items()]
     summary = "\n".join(summary_lines)
+    
     customer = update.effective_user.full_name
     uname = update.effective_user.username or "N/A"
     phone = data.get("phone", "N/A")
-    # Updated Maps link for better compatibility
     mapslink = f"https://www.google.com/maps/search/?api=1&query={update.message.location.latitude},{update.message.location.longitude}"
 
     await ctx.bot.send_message(
@@ -276,15 +338,10 @@ Total: {total} ETB
     await ctx.bot.send_message(config.CHANNEL_ID, msg, parse_mode='Markdown', reply_markup=keyboard)
 
     await update.message.reply_text(
-        f"✅ Your order has been sent!\nPlease wait for confirmation.\n\n📦 *Order ID:* `{order_id}`\n\n🧾 *Order Summary*\n{summary}💵 Total: {total} ETB",
+        f"✅ Order Sent!\nID: `{order_id}`\n\n{summary}💵 Total: {total} ETB",
         parse_mode="Markdown",
-        reply_markup=ReplyKeyboardMarkup(
-            [["🔙 Back"]],
-            resize_keyboard=True,
-            one_time_keyboard=True
-        )
+        reply_markup=ReplyKeyboardMarkup([["🔙 Back"]], resize_keyboard=True, one_time_keyboard=True)
     )
-
     data['orders'] = {}
     data['current_cafe'] = None
 
@@ -300,7 +357,6 @@ async def accept_or_decline(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         action, uid_str, order_id = data.split("_")
         uid = int(uid_str)
     except:
-        logger.error(f"Invalid callback data: {data}")
         return
 
     msg = query.message
@@ -313,64 +369,36 @@ async def accept_or_decline(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if action == "accept":
         updated = msg.text + f"\n\n✅ Accepted by {admin_name}"
         await query.message.edit_text(updated, reply_markup=None)
-        await ctx.bot.send_message(uid, f"✅ Your order `{order_id}` has been accepted and is on its way! 🚚", parse_mode="Markdown")
+        await ctx.bot.send_message(uid, f"✅ Order `{order_id}` accepted! 🚚", parse_mode="Markdown")
     elif action == "decline":
         updated = msg.text + f"\n\n❌ Declined by {admin_name}"
         await query.message.edit_text(updated, reply_markup=None)
-        await ctx.bot.send_message(uid, f"😔 Sorry, your order `{order_id}` has been declined by the café.", parse_mode="Markdown")
+        await ctx.bot.send_message(uid, f"😔 Order `{order_id}` declined.", parse_mode="Markdown")
 
 async def broadcast(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Admin command to broadcast message to all users"""
-    if not is_admin(update):
-        await update.message.reply_text("❌ You don't have permission to use this command.")
+    if not is_admin(update): return
+    
+    message_text = update.message.text.replace("/broadcast", "").strip()
+    if not message_text:
+        await update.message.reply_text("Usage: /broadcast <message>")
         return
     
-    # Get the message to broadcast
-    message_text = update.message.text
-    if message_text.startswith("/broadcast"):
-        broadcast_msg = message_text.replace("/broadcast", "").strip()
-        if not broadcast_msg:
-            await update.message.reply_text(
-                "📢 Usage: /broadcast <your message>\n\n"
-                "Example: /broadcast Hello everyone! We have a special offer today."
-            )
-            return
-    
-    total_users = len(user_data)
-    success_count = 0
-    failed_count = 0
-    
-    await update.message.reply_text(f"📤 Broadcasting to {total_users} users...")
+    success, failed = 0, 0
+    await update.message.reply_text(f"📤 Sending to {len(user_data)} users...")
     
     for chat_id in list(user_data.keys()):
         try:
-            await ctx.bot.send_message(chat_id, f"📢 *Announcement*\n\n{broadcast_msg}", parse_mode="Markdown")
-            success_count += 1
-        except Exception as e:
-            logger.error(f"Failed to send message to {chat_id}: {e}")
-            failed_count += 1
+            await ctx.bot.send_message(chat_id, f"📢 *Announcement*\n\n{message_text}", parse_mode="Markdown")
+            success += 1
+        except:
+            failed += 1
     
-    await update.message.reply_text(
-        f"✅ Broadcast completed!\n"
-        f"✅ Success: {success_count}\n"
-        f"❌ Failed: {failed_count}\n"
-        f"📊 Total: {total_users}"
-    )
+    await update.message.reply_text(f"✅ Sent: {success} | ❌ Failed: {failed}")
 
 async def stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Admin command to see total number of users"""
-    if not is_admin(update):
-        await update.message.reply_text("❌ You don't have permission to use this command.")
-        return
-    
-    total_users = len(user_data)
-    users_with_phone = sum(1 for data in user_data.values() if data.get("phone"))
-    
+    if not is_admin(update): return
     await update.message.reply_text(
-        f"📊 *Bot Statistics*\n\n"
-        f"👥 Total Users: {total_users}\n"
-        f"📞 Users with Phone: {users_with_phone}\n"
-        f"📱 Users without Phone: {total_users - users_with_phone}",
+        f"📊 *Stats*\nUsers: {len(user_data)}\nPhones Saved: {sum(1 for d in user_data.values() if d.get('phone'))}",
         parse_mode="Markdown"
     )
 
@@ -378,28 +406,29 @@ def error_handler(update: object, ctx: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Error: {ctx.error}", exc_info=True)
 
 def main():
-    # 1. Start the Flask keep-alive server in a separate thread
-    keep_alive()
-
-    # 2. Build the Telegram Application
+    keep_alive() # Start Web Server
     app = ApplicationBuilder().token(config.BOT_TOKEN).build()
 
-    # 3. Add Handlers
-    app.add_handler(CommandHandler("start", start))
+    # Admin Commands
+    app.add_handler(CommandHandler("open", set_service_mode))
+    app.add_handler(CommandHandler("close", set_service_mode))
+    app.add_handler(CommandHandler("auto", set_service_mode))
+    app.add_handler(CommandHandler("dm", admin_dm))
     app.add_handler(CommandHandler("broadcast", broadcast))
     app.add_handler(CommandHandler("stats", stats))
+    
+    # User Handlers
+    app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.CONTACT, contact))
     app.add_handler(MessageHandler(filters.LOCATION, location))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(CallbackQueryHandler(accept_or_decline))
-    
-    # 4. Error handling
     app.add_error_handler(error_handler)
 
-    # 5. Start Polling
     print("Bot is running...")
     app.run_polling()
 
 if __name__ == "__main__":
     main()
 
+    
