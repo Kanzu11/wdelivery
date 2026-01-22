@@ -32,7 +32,6 @@ SERVICE_MODE = 'AUTO'
 # --- HELPERS ---
 
 def get_user_lang(chat_id):
-    # Default to English if user/lang not found
     return user_data.get(chat_id, {}).get('lang', 'en')
 
 def t(chat_id, key):
@@ -46,24 +45,34 @@ def is_admin(update: Update) -> bool:
 def is_open() -> bool:
     if SERVICE_MODE == 'OPEN': return True
     if SERVICE_MODE == 'CLOSED': return False
+    # Timezone: EAT (UTC+3)
     now = datetime.datetime.utcnow() + datetime.timedelta(hours=3)
     return config.OPEN_HOUR <= now.hour < config.CLOSE_HOUR
 
+async def check_is_closed(update, chat_id):
+    """Returns True if closed, and sends message."""
+    # Admins can always test even if closed
+    if is_admin(update): 
+        return False
+        
+    if not is_open():
+        await update.message.reply_text(t(chat_id, 'closed'))
+        return True
+    return False
+
 async def ask_for_phone(update, chat_id):
-    """Forces user to share phone number"""
     btn_text = t(chat_id, 'btn_phone')
     kb = ReplyKeyboardMarkup([[KeyboardButton(btn_text, request_contact=True)]], resize_keyboard=True, one_time_keyboard=True)
     await update.message.reply_text(t(chat_id, 'ask_phone'), reply_markup=kb)
 
 async def check_user_exists(update, chat_id):
-    """Restores user profile if bot restarted (RAM cleared)"""
     if chat_id not in user_data:
         user_data[chat_id] = {
             'lang': None, 'phone': None, 'orders': {}, 
             'current_cafe': None, 'location': None
         }
-        return False # User was just created/reset
-    return True # User exists
+        return False 
+    return True 
 
 # --- HANDLERS ---
 
@@ -73,7 +82,6 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if user.username:
         username_map[user.username.lower()] = chat_id
 
-    # Ensure profile exists
     await check_user_exists(update, chat_id)
 
     # 1. Language Selection (Always First)
@@ -87,12 +95,10 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if is_admin(update):
         await update.message.reply_text("👑 Admin: /open, /close, /auto, /broadcast")
 
-    # 2. Check Open/Closed
-    if not is_open():
-        await update.message.reply_text(t(chat_id, 'closed'))
-        return
+    # 2. Check Time (On Start)
+    if await check_is_closed(update, chat_id): return
 
-    # 3. Check Phone (STRICT)
+    # 3. Check Phone (On Start)
     if not user_data[chat_id].get("phone"):
         await ask_for_phone(update, chat_id)
         return
@@ -110,9 +116,11 @@ async def set_language(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif "አማርኛ" in text:
         user_data[chat_id]['lang'] = 'am'
     
+    # Check Time before proceeding
+    if await check_is_closed(update, chat_id): return
+
     await update.message.reply_text(t(chat_id, 'welcome'))
     
-    # IMMEDIATE PHONE CHECK
     if not user_data[chat_id].get("phone"):
         await ask_for_phone(update, chat_id)
     else:
@@ -121,6 +129,9 @@ async def set_language(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def contact(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     await check_user_exists(update, chat_id)
+    
+    # Check Time on Contact Share
+    if await check_is_closed(update, chat_id): return
     
     if update.message.contact:
         user_data[chat_id]['phone'] = update.message.contact.phone_number
@@ -138,18 +149,20 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await set_language(update, ctx)
         return
 
-    # 2. Safety: Ensure Lang is set
     if not user_data[chat_id].get('lang'):
         await start(update, ctx)
         return
 
-    # 3. STRICT GATEKEEPER: Check Phone
-    # If phone is missing, BLOCK ALL ACTIONS and ask for phone
+    # 2. STRICT TIME CHECK
+    # If shop closes while user is clicking buttons, stop them here.
+    if await check_is_closed(update, chat_id): return
+
+    # 3. STRICT PHONE CHECK
     if not user_data[chat_id].get("phone"):
         await ask_for_phone(update, chat_id)
         return
 
-    # --- Only proceed if phone is known ---
+    # --- Proceed ---
 
     lang = user_data[chat_id]['lang']
     data = user_data[chat_id]
@@ -180,7 +193,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await show_main_menu(update)
         return
 
-    # Ordering Logic
+    # Ordering
     if not data.get("current_cafe"):
         if text in menus.CAFES:
             data['current_cafe'] = text
@@ -194,7 +207,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await request_location(update)
         return
 
-    # Add Item to Cart
+    # Add Item
     try:
         if " — " not in text: return
         item, _, _ = text.partition(" — ")
@@ -212,6 +225,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def show_main_menu(update: Update):
     chat_id = update.effective_chat.id
     
+    # Only reset cafe choice, NOT location status until order sent
     user_data[chat_id]['current_cafe'] = None
     user_data[chat_id]['awaiting_location'] = False
     
@@ -238,7 +252,7 @@ async def request_location(update: Update):
     chat_id = update.effective_chat.id
     data = user_data[chat_id]
     
-    # DOUBLE CHECK PHONE BEFORE ASKING LOCATION
+    # Check Phone
     if not data.get("phone"):
         await ask_for_phone(update, chat_id)
         return
@@ -280,19 +294,17 @@ async def show_profile(update: Update):
 
 async def location(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    
-    # 1. Ensure Data Exists (Fix for bot restart)
     exists = await check_user_exists(update, chat_id)
     if not exists:
-        # If user data didn't exist, we just created it empty.
-        # So we MUST ask for phone.
         await ask_for_phone(update, chat_id)
         return
 
+    # Check Time on Location Share
+    if await check_is_closed(update, chat_id): return
+
     data = user_data.get(chat_id)
     
-    # 2. STRICT PHONE CHECK (The Fix for "Phone: None")
-    # Even if data exists, check if phone is None
+    # Check Phone
     if not data.get("phone"):
         await ask_for_phone(update, chat_id)
         return
@@ -320,7 +332,6 @@ async def location(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     
     cart_summary = "\n".join(cart_items)
     
-    # Phone is guaranteed to exist here now
     customer_info = (
         f"👤 {update.effective_user.full_name}\n"
         f"📞 {data['phone']}\n"
