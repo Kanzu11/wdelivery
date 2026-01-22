@@ -25,7 +25,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # --- STORAGE ---
-# Note: Resets on Render restart. Use Database for permanence.
 user_data = {}           
 username_map = {}        
 
@@ -50,6 +49,12 @@ def is_open() -> bool:
     now = datetime.datetime.utcnow() + datetime.timedelta(hours=3)
     return config.OPEN_HOUR <= now.hour < config.CLOSE_HOUR
 
+async def ask_for_phone(update, chat_id):
+    """Helper to send the phone request message"""
+    btn_text = t(chat_id, 'btn_phone')
+    kb = ReplyKeyboardMarkup([[KeyboardButton(btn_text, request_contact=True)]], resize_keyboard=True, one_time_keyboard=True)
+    await update.message.reply_text(t(chat_id, 'ask_phone'), reply_markup=kb)
+
 # --- HANDLERS ---
 
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -65,7 +70,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             'current_cafe': None, 'location': None
         }
 
-    # 1. Language Selection
+    # 1. Language Selection (Always First)
     if not user_data[chat_id]['lang']:
         keyboard = ReplyKeyboardMarkup([['🇺🇸 English', '🇪🇹 አማርኛ']], resize_keyboard=True, one_time_keyboard=True)
         msg = languages.TEXTS['am'].get('choose_lang', "Please select language:")
@@ -81,45 +86,12 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(t(chat_id, 'closed'))
         return
 
-    # 3. Check Phone
+    # 3. Check Phone (Strict)
     if not user_data[chat_id].get("phone"):
-        btn_text = t(chat_id, 'btn_phone')
-        kb = ReplyKeyboardMarkup([[KeyboardButton(btn_text, request_contact=True)]], resize_keyboard=True, one_time_keyboard=True)
-        await update.message.reply_text(t(chat_id, 'ask_phone'), reply_markup=kb)
+        await ask_for_phone(update, chat_id)
         return
 
     await show_main_menu(update)
-
-async def show_main_menu(update: Update):
-    chat_id = update.effective_chat.id
-    
-    # Reset Order State
-    user_data[chat_id]['current_cafe'] = None
-    user_data[chat_id]['awaiting_location'] = False
-    
-    # Build Menu
-    cafés = list(menus.CAFES.keys())
-    menu_buttons = [[c] for c in cafés]
-    menu_buttons.append([t(chat_id, 'btn_profile')]) 
-    
-    kb = ReplyKeyboardMarkup(menu_buttons, resize_keyboard=True)
-    await update.message.reply_text(t(chat_id, 'choose_cafe'), reply_markup=kb)
-
-async def show_profile(update: Update):
-    chat_id = update.effective_chat.id
-    data = user_data[chat_id]
-    
-    phone = data.get('phone', 'N/A')
-    loc_status = t(chat_id, 'location_set') if data.get('location') else t(chat_id, 'location_not_set')
-    
-    msg = t(chat_id, 'profile_header').replace("{}", str(phone), 1).replace("{}", str(loc_status), 1)
-    
-    kb = ReplyKeyboardMarkup([
-        [t(chat_id, 'btn_switch_lang'), t(chat_id, 'btn_edit_phone')],
-        [t(chat_id, 'btn_back')]
-    ], resize_keyboard=True)
-    
-    await update.message.reply_text(msg, parse_mode='Markdown', reply_markup=kb)
 
 async def set_language(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -131,7 +103,12 @@ async def set_language(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         user_data.setdefault(chat_id, {})['lang'] = 'am'
     
     await update.message.reply_text(t(chat_id, 'welcome'))
-    await show_main_menu(update)
+    
+    # After language is set, immediately check phone
+    if not user_data[chat_id].get("phone"):
+        await ask_for_phone(update, chat_id)
+    else:
+        await show_main_menu(update)
 
 async def contact(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -144,15 +121,23 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     text = update.message.text
     
-    # Language Setup
+    # 1. Handle Language Setup (Exception: Allow language choice)
     if text in ['🇺🇸 English', '🇪🇹 አማርኛ']:
         await set_language(update, ctx)
         return
 
-    # Safety Check
+    # 2. Safety Check: Ensure User Exists/Has Language
     if chat_id not in user_data or not user_data[chat_id].get('lang'):
         await start(update, ctx)
         return
+
+    # 3. STRICT GATEKEEPER: Check Phone
+    # If phone is missing, BLOCK ALL other text inputs and ask for phone
+    if not user_data[chat_id].get("phone"):
+        await ask_for_phone(update, chat_id)
+        return
+
+    # --- Only proceed below if phone is known ---
 
     lang = user_data[chat_id]['lang']
     data = user_data[chat_id]
@@ -212,6 +197,19 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     except:
         pass
 
+async def show_main_menu(update: Update):
+    chat_id = update.effective_chat.id
+    
+    user_data[chat_id]['current_cafe'] = None
+    user_data[chat_id]['awaiting_location'] = False
+    
+    cafés = list(menus.CAFES.keys())
+    menu_buttons = [[c] for c in cafés]
+    menu_buttons.append([t(chat_id, 'btn_profile')]) 
+    
+    kb = ReplyKeyboardMarkup(menu_buttons, resize_keyboard=True)
+    await update.message.reply_text(t(chat_id, 'choose_cafe'), reply_markup=kb)
+
 async def show_cafe_items(update: Update, cafe_name: str):
     chat_id = update.effective_chat.id
     menu = menus.CAFES[cafe_name]
@@ -247,28 +245,48 @@ async def request_location(update: Update):
     data['awaiting_location'] = True
     await update.message.reply_text(msg + "\n\n" + t(chat_id, 'ask_location'), reply_markup=kb, parse_mode="Markdown")
 
+async def show_profile(update: Update):
+    chat_id = update.effective_chat.id
+    data = user_data[chat_id]
+    
+    phone = data.get('phone', 'N/A')
+    loc_status = t(chat_id, 'location_set') if data.get('location') else t(chat_id, 'location_not_set')
+    
+    msg = t(chat_id, 'profile_header').replace("{}", str(phone), 1).replace("{}", str(loc_status), 1)
+    
+    kb = ReplyKeyboardMarkup([
+        [t(chat_id, 'btn_switch_lang'), t(chat_id, 'btn_edit_phone')],
+        [t(chat_id, 'btn_back')]
+    ], resize_keyboard=True)
+    
+    await update.message.reply_text(msg, parse_mode='Markdown', reply_markup=kb)
+
 async def location(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     data = user_data.get(chat_id)
     
-    if not data or not data.get("awaiting_location"): return
+    # Safety checks
+    if not data: return
+    
+    # STRICT PHONE CHECK IN LOCATION TOO
+    if not data.get("phone"):
+        await ask_for_phone(update, chat_id)
+        return
+
+    if not data.get("awaiting_location"): return
 
     data['awaiting_location'] = False
     lat = update.message.location.latitude
     lon = update.message.location.longitude
 
-    # Geofence Check
     if not geofence.in_werabe(lat, lon):
         await update.message.reply_text(t(chat_id, 'location_error'))
         return
 
     data['location'] = {'lat': lat, 'lon': lon}
 
-    # --- GENERATE HEX ID (e.g. #71C77CC3) ---
-    # Generated ONCE here, used in both messages below
     order_id = f"#{uuid.uuid4().hex[:8].upper()}"
     
-    # Calculate Total
     total_price = 39
     cart_items = []
     for (cafe, item), qty in data['orders'].items():
@@ -285,8 +303,6 @@ async def location(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
     try:
-        # --- MSG 1: THE MAP LINK (Using ID) ---
-        # "📍 Customer location for Order ID: #71C77CC3: Open Map(link)"
         mapslink = f"https://www.google.com/maps/search/?api=1&query={lat},{lon}"
         map_msg = f"📍 Customer location for Order ID: `{order_id}`: [Open Map]({mapslink})"
         
@@ -297,7 +313,6 @@ async def location(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             disable_web_page_preview=False 
         )
 
-        # --- MSG 2: ORDER DETAILS (Using SAME ID) ---
         admin_msg = f"""📦 *ORDER DETAILS {order_id}*
     
 {customer_info}
@@ -319,10 +334,8 @@ async def location(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             reply_markup=kb
         )
 
-        # Confirm to User
         await update.message.reply_text(t(chat_id, 'order_sent').format(order_id), parse_mode="Markdown")
         
-        # Reset
         data['orders'] = {}
         data['current_cafe'] = None
         await show_main_menu(update)
