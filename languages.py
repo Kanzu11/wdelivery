@@ -32,7 +32,7 @@ TEXTS = {
         'location_not_set': "Not Set ❌"
     },
     'am': {
-        'choose_lang': "እባክዎ ቋንቋ ይምረጡ / Please choose language:",  # <--- THIS WAS MISSING
+        'choose_lang': "እባክዎ ቋንቋ ይምረጡ / Please choose language:",
         'welcome': "👋 ወደ ዴሊቨሪ አገልግሎታችን እንኳን በደህና መጡ!",
         'closed': "⛔ ይቅርታ፣ አሁን ዝግ ነን። በየቀኑ ከጠዋቱ 12 ሰዓት እስከ ማታ 12 ሰዓት ክፍት ነን።",
         'ask_phone': "📞 ለመቀጠል እባክዎ ስልክ ቁጥርዎን ያጋሩ፡",
@@ -66,5 +66,4 @@ TEXTS = {
 }
 
 def get_text(lang, key):
-    # This prevents the crash if a key is missing by falling back to English
     return TEXTS.get(lang, TEXTS['en']).get(key, TEXTS['en'].get(key, key))
