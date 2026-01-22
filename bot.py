@@ -49,12 +49,16 @@ def is_open() -> bool:
     now = datetime.datetime.utcnow() + datetime.timedelta(hours=3)
     return config.OPEN_HOUR <= now.hour < config.CLOSE_HOUR
 
+def track_username(update: Update):
+    """Updates the map of usernames to chat_ids on every interaction"""
+    user = update.effective_user
+    chat_id = update.effective_chat.id
+    if user and user.username:
+        # Store as lowercase for case-insensitive lookup
+        username_map[user.username.lower()] = chat_id
+
 async def check_is_closed(update, chat_id):
     """Returns True if closed, and sends message."""
-    # Admins can always test even if closed
-    if is_admin(update): 
-        return False
-        
     if not is_open():
         await update.message.reply_text(t(chat_id, 'closed'))
         return True
@@ -74,14 +78,76 @@ async def check_user_exists(update, chat_id):
         return False 
     return True 
 
-# --- HANDLERS ---
+# --- ADMIN HANDLERS ---
+
+async def admin_dm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    Usage: /dm @username Your message here
+    """
+    if not is_admin(update): return
+
+    # Check arguments
+    if not ctx.args or len(ctx.args) < 2:
+        await update.message.reply_text("❌ Usage: /dm @username <message>")
+        return
+
+    # Parse target and message
+    target_handle = ctx.args[0].replace("@", "").lower()
+    message_body = " ".join(ctx.args[1:])
+
+    # Lookup Chat ID
+    target_chat_id = username_map.get(target_handle)
+
+    if not target_chat_id:
+        await update.message.reply_text(f"❌ User @{target_handle} not found in bot memory.\n(They must interact with the bot after the last server restart).")
+        return
+
+    # Send Message
+    try:
+        # Get user lang for a localized header, or default to English/Neutral
+        user_lang = user_data.get(target_chat_id, {}).get('lang', 'en')
+        header = languages.TEXTS[user_lang].get('admin_dm', "🔔 Notification:\n\n{}").format(message_body)
+        
+        await ctx.bot.send_message(target_chat_id, header)
+        await update.message.reply_text(f"✅ Message sent to @{target_handle}")
+    except Exception as e:
+        logger.error(f"DM Failed: {e}")
+        await update.message.reply_text(f"❌ Failed to send: {e}")
+
+async def admin_broadcast(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update): return
+    msg = update.message.text.replace("/broadcast", "").strip()
+    if not msg: 
+        await update.message.reply_text("Usage: /broadcast <message>")
+        return
+    
+    count = 0
+    await update.message.reply_text(f"📤 Sending to {len(user_data)} users...")
+    
+    for uid, udata in user_data.items():
+        lang = udata.get('lang', 'en')
+        prefix = languages.get_text(lang, 'admin_broadcast').format(msg)
+        try:
+            await ctx.bot.send_message(uid, prefix)
+            count += 1
+        except: pass
+    await update.message.reply_text(f"✅ Sent to {count} users.")
+
+async def admin_control(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    global SERVICE_MODE
+    if not is_admin(update): return
+    cmd = update.message.text
+    if "/open" in cmd: SERVICE_MODE = 'OPEN'
+    elif "/close" in cmd: SERVICE_MODE = 'CLOSED'
+    elif "/auto" in cmd: SERVICE_MODE = 'AUTO'
+    await update.message.reply_text(f"Service Mode: {SERVICE_MODE}")
+
+# --- USER HANDLERS ---
 
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    track_username(update) # Track user
     chat_id = update.effective_chat.id
-    user = update.effective_user
-    if user.username:
-        username_map[user.username.lower()] = chat_id
-
+    
     await check_user_exists(update, chat_id)
 
     # 1. Language Selection (Always First)
@@ -93,12 +159,12 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     # Admin Help
     if is_admin(update):
-        await update.message.reply_text("👑 Admin: /open, /close, /auto, /broadcast")
+        await update.message.reply_text("👑 Admin: /open, /close, /auto, /broadcast, /dm")
 
-    # 2. Check Time (On Start)
+    # 2. Check Time
     if await check_is_closed(update, chat_id): return
 
-    # 3. Check Phone (On Start)
+    # 3. Check Phone
     if not user_data[chat_id].get("phone"):
         await ask_for_phone(update, chat_id)
         return
@@ -106,6 +172,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await show_main_menu(update)
 
 async def set_language(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    track_username(update)
     chat_id = update.effective_chat.id
     text = update.message.text
 
@@ -127,10 +194,10 @@ async def set_language(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await show_main_menu(update)
 
 async def contact(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    track_username(update)
     chat_id = update.effective_chat.id
     await check_user_exists(update, chat_id)
     
-    # Check Time on Contact Share
     if await check_is_closed(update, chat_id): return
     
     if update.message.contact:
@@ -139,30 +206,35 @@ async def contact(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await show_main_menu(update)
 
 async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    track_username(update)
     chat_id = update.effective_chat.id
     text = update.message.text
     
-    await check_user_exists(update, chat_id)
+    # 1. CRITICAL: Check if profile exists. 
+    exists = await check_user_exists(update, chat_id)
+    if not exists:
+        await start(update, ctx)
+        return
 
-    # 1. Handle Language Setup
+    # 2. Handle Language Setup
     if text in ['🇺🇸 English', '🇪🇹 አማርኛ']:
         await set_language(update, ctx)
         return
 
+    # 3. Safety: Ensure Lang is set
     if not user_data[chat_id].get('lang'):
         await start(update, ctx)
         return
 
-    # 2. STRICT TIME CHECK
-    # If shop closes while user is clicking buttons, stop them here.
+    # 4. STRICT TIME CHECK
     if await check_is_closed(update, chat_id): return
 
-    # 3. STRICT PHONE CHECK
+    # 5. STRICT PHONE CHECK
     if not user_data[chat_id].get("phone"):
         await ask_for_phone(update, chat_id)
         return
 
-    # --- Proceed ---
+    # --- Proceed (Profile, Time, and Phone are all valid) ---
 
     lang = user_data[chat_id]['lang']
     data = user_data[chat_id]
@@ -193,7 +265,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await show_main_menu(update)
         return
 
-    # Ordering
+    # Ordering Logic
     if not data.get("current_cafe"):
         if text in menus.CAFES:
             data['current_cafe'] = text
@@ -207,11 +279,13 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await request_location(update)
         return
 
-    # Add Item
+    # Add Item to Cart
     try:
         if " — " not in text: return
         item, _, _ = text.partition(" — ")
         current_cafe = data['current_cafe']
+        
+        # Validation checks
         if current_cafe not in menus.CAFES or item not in menus.CAFES[current_cafe]: return
         if menus.CAFES[current_cafe][item] is None: return
 
@@ -225,7 +299,6 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def show_main_menu(update: Update):
     chat_id = update.effective_chat.id
     
-    # Only reset cafe choice, NOT location status until order sent
     user_data[chat_id]['current_cafe'] = None
     user_data[chat_id]['awaiting_location'] = False
     
@@ -252,7 +325,6 @@ async def request_location(update: Update):
     chat_id = update.effective_chat.id
     data = user_data[chat_id]
     
-    # Check Phone
     if not data.get("phone"):
         await ask_for_phone(update, chat_id)
         return
@@ -293,18 +365,21 @@ async def show_profile(update: Update):
     await update.message.reply_text(msg, parse_mode='Markdown', reply_markup=kb)
 
 async def location(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    track_username(update)
     chat_id = update.effective_chat.id
+    
+    # 1. Check Profile
     exists = await check_user_exists(update, chat_id)
     if not exists:
-        await ask_for_phone(update, chat_id)
+        await start(update, ctx)
         return
 
-    # Check Time on Location Share
+    # 2. Check Time
     if await check_is_closed(update, chat_id): return
 
     data = user_data.get(chat_id)
     
-    # Check Phone
+    # 3. Check Phone
     if not data.get("phone"):
         await ask_for_phone(update, chat_id)
         return
@@ -407,36 +482,13 @@ async def accept_or_decline(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.message.edit_text(new_text, reply_markup=None)
         await ctx.bot.send_message(uid, t(uid, 'order_declined').format(order_id), parse_mode="Markdown")
 
-async def admin_broadcast(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update): return
-    msg = update.message.text.replace("/broadcast", "").strip()
-    if not msg: return
-    
-    count = 0
-    for uid, udata in user_data.items():
-        lang = udata.get('lang', 'en')
-        prefix = languages.get_text(lang, 'admin_broadcast').format(msg)
-        try:
-            await ctx.bot.send_message(uid, prefix)
-            count += 1
-        except: pass
-    await update.message.reply_text(f"Sent to {count} users.")
-
-async def admin_control(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    global SERVICE_MODE
-    if not is_admin(update): return
-    cmd = update.message.text
-    if "/open" in cmd: SERVICE_MODE = 'OPEN'
-    elif "/close" in cmd: SERVICE_MODE = 'CLOSED'
-    elif "/auto" in cmd: SERVICE_MODE = 'AUTO'
-    await update.message.reply_text(f"Service Mode: {SERVICE_MODE}")
-
 def main():
     keep_alive()
     app = ApplicationBuilder().token(config.BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("broadcast", admin_broadcast))
+    app.add_handler(CommandHandler("dm", admin_dm)) # <-- Added DM Handler
     app.add_handler(CommandHandler(["open", "close", "auto"], admin_control))
     
     app.add_handler(MessageHandler(filters.CONTACT, contact))
