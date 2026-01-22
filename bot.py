@@ -17,6 +17,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 user_data = {}
+ADMIN_USERNAME = "kanzedin"  # Admin username
+
+def is_admin(update: Update) -> bool:
+    """Check if the user is the admin"""
+    username = update.effective_user.username
+    return username and username.lower() == ADMIN_USERNAME.lower()
 
 def is_open() -> bool:
     now = datetime.datetime.utcnow() + datetime.timedelta(hours=3)
@@ -27,6 +33,15 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user_data.setdefault(chat_id, {
         'orders': {}, 'phone': None, 'current_cafe': None, 'awaiting_location': False
     })
+    
+    # Track user for admin stats
+    if is_admin(update):
+        await update.message.reply_text(
+            "👑 Admin mode activated!\n\n"
+            "Available commands:\n"
+            "/broadcast - Send message to all users\n"
+            "/stats - See total number of users"
+        )
 
     if not is_open():
         await update.message.reply_text("Sorry, we're closed. Open daily 12 AM–12 PM .")
@@ -269,6 +284,62 @@ async def accept_or_decline(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.message.edit_text(updated, reply_markup=None)
         await ctx.bot.send_message(uid, f"😔 Sorry, your order `{order_id}` has been declined by the café.", parse_mode="Markdown")
 
+async def broadcast(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Admin command to broadcast message to all users"""
+    if not is_admin(update):
+        await update.message.reply_text("❌ You don't have permission to use this command.")
+        return
+    
+    # Get the message to broadcast (everything after /broadcast)
+    message_text = update.message.text
+    if message_text.startswith("/broadcast"):
+        broadcast_msg = message_text.replace("/broadcast", "").strip()
+        if not broadcast_msg:
+            await update.message.reply_text(
+                "📢 Usage: /broadcast <your message>\n\n"
+                "Example: /broadcast Hello everyone! We have a special offer today."
+            )
+            return
+    
+    # Send to all users
+    total_users = len(user_data)
+    success_count = 0
+    failed_count = 0
+    
+    await update.message.reply_text(f"📤 Broadcasting to {total_users} users...")
+    
+    for chat_id in list(user_data.keys()):
+        try:
+            await ctx.bot.send_message(chat_id, f"📢 *Announcement*\n\n{broadcast_msg}", parse_mode="Markdown")
+            success_count += 1
+        except Exception as e:
+            logger.error(f"Failed to send message to {chat_id}: {e}")
+            failed_count += 1
+    
+    await update.message.reply_text(
+        f"✅ Broadcast completed!\n"
+        f"✅ Success: {success_count}\n"
+        f"❌ Failed: {failed_count}\n"
+        f"📊 Total: {total_users}"
+    )
+
+async def stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Admin command to see total number of users"""
+    if not is_admin(update):
+        await update.message.reply_text("❌ You don't have permission to use this command.")
+        return
+    
+    total_users = len(user_data)
+    users_with_phone = sum(1 for data in user_data.values() if data.get("phone"))
+    
+    await update.message.reply_text(
+        f"📊 *Bot Statistics*\n\n"
+        f"👥 Total Users: {total_users}\n"
+        f"📞 Users with Phone: {users_with_phone}\n"
+        f"📱 Users without Phone: {total_users - users_with_phone}",
+        parse_mode="Markdown"
+    )
+
 async def keep_alive(request):
     return web.Response(text="Bot is running ✅")
 
@@ -291,6 +362,8 @@ def error_handler(update: object, ctx: ContextTypes.DEFAULT_TYPE):
 def main():
     app = ApplicationBuilder().token(config.BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("broadcast", broadcast))
+    app.add_handler(CommandHandler("stats", stats))
     app.add_handler(MessageHandler(filters.CONTACT, contact))
     app.add_handler(MessageHandler(filters.LOCATION, location))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
