@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 user_data = {}
 
 def is_open() -> bool:
-    now = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=3)
+    now = datetime.datetime.utcnow() + datetime.timedelta(hours=3)
     return config.OPEN_HOUR <= now.hour < config.CLOSE_HOUR
 
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -272,30 +272,31 @@ async def accept_or_decline(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def keep_alive(request):
     return web.Response(text="Bot is running ✅")
 
-async def run_keep_alive_server():
+def run_keep_alive_server():
     app = web.Application()
     app.router.add_get("/", keep_alive)
     runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", 8080)
-    await site.start()
-    print("Keep-alive server running on port 8080")
+
+    async def start_server():
+        await runner.setup()
+        site = web.TCPSite(runner, "0.0.0.0", 8080)
+        await site.start()
+        print("Keep-alive server running on port 8080")
+
+    asyncio.get_event_loop().create_task(start_server())
 
 def error_handler(update: object, ctx: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Error: {ctx.error}", exc_info=True)
 
-async def post_init(application):
-    """Start keep-alive server after application initialization"""
-    await run_keep_alive_server()
-
 def main():
-    app = ApplicationBuilder().token(config.BOT_TOKEN).post_init(post_init).build()
+    app = ApplicationBuilder().token(config.BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.CONTACT, contact))
     app.add_handler(MessageHandler(filters.LOCATION, location))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(CallbackQueryHandler(accept_or_decline))
     app.add_error_handler(error_handler)
+    run_keep_alive_server()
     app.run_polling()
 
 if __name__ == "__main__":
