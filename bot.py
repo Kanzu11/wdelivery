@@ -1,6 +1,6 @@
 import logging
 import datetime
-import random
+import uuid
 from telegram import (
     Update, KeyboardButton, ReplyKeyboardMarkup,
     InlineKeyboardButton, InlineKeyboardMarkup, Contact
@@ -68,7 +68,6 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # 1. Language Selection
     if not user_data[chat_id]['lang']:
         keyboard = ReplyKeyboardMarkup([['🇺🇸 English', '🇪🇹 አማርኛ']], resize_keyboard=True, one_time_keyboard=True)
-        # Safe fallback if 'am' key is missing, defaults to English text
         msg = languages.TEXTS['am'].get('choose_lang', "Please select language:")
         await update.message.reply_text(msg, reply_markup=keyboard)
         return
@@ -112,9 +111,7 @@ async def show_profile(update: Update):
     
     phone = data.get('phone', 'N/A')
     loc_status = t(chat_id, 'location_set') if data.get('location') else t(chat_id, 'location_not_set')
-    lang_name = "English" if data.get('lang') == 'en' else "አማርኛ"
     
-    # Using format directly with safeguards
     msg = t(chat_id, 'profile_header').replace("{}", str(phone), 1).replace("{}", str(loc_status), 1)
     
     kb = ReplyKeyboardMarkup([
@@ -267,8 +264,9 @@ async def location(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     data['location'] = {'lat': lat, 'lon': lon}
 
-    # Generate 8-digit Order ID
-    order_id = f"#{random.randint(10000000, 99999999)}"
+    # --- GENERATE HEX ID (e.g. #71C77CC3) ---
+    # Generated ONCE here, used in both messages below
+    order_id = f"#{uuid.uuid4().hex[:8].upper()}"
     
     # Calculate Total
     total_price = 39
@@ -287,17 +285,20 @@ async def location(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
     try:
-        # 1. Send Map as VENUE (with Order ID title)
-        await ctx.bot.send_venue(
+        # --- MSG 1: THE MAP LINK (Using ID) ---
+        # "📍 Customer location for Order ID: #71C77CC3: Open Map(link)"
+        mapslink = f"https://www.google.com/maps/search/?api=1&query={lat},{lon}"
+        map_msg = f"📍 Customer location for Order ID: `{order_id}`: [Open Map]({mapslink})"
+        
+        await ctx.bot.send_message(
             chat_id=config.CHANNEL_ID,
-            latitude=lat,
-            longitude=lon,
-            title=f"Order {order_id}",
-            address=f"Customer: {update.effective_user.full_name}"
+            text=map_msg,
+            parse_mode='Markdown',
+            disable_web_page_preview=False 
         )
 
-        # 2. Send Order Details
-        admin_msg = f"""📦 *ORDER {order_id}*
+        # --- MSG 2: ORDER DETAILS (Using SAME ID) ---
+        admin_msg = f"""📦 *ORDER DETAILS {order_id}*
     
 {customer_info}
 
@@ -318,6 +319,7 @@ async def location(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             reply_markup=kb
         )
 
+        # Confirm to User
         await update.message.reply_text(t(chat_id, 'order_sent').format(order_id), parse_mode="Markdown")
         
         # Reset
@@ -327,7 +329,7 @@ async def location(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logger.error(f"FAILED TO SEND ORDER: {e}") 
-        await update.message.reply_text("❌ System Error. Please contact support or try again.")
+        await update.message.reply_text("❌ System Error. Please contact support.")
 
 async def accept_or_decline(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
