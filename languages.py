@@ -2,65 +2,28 @@
 
 TEXTS = {
     'en': {
-        'choose_lang': "Please select your language:",
-        'welcome': "👋 Welcome to our Delivery Service!",
-        'closed': "⛔ Sorry, we are currently closed. Open daily 6 AM – 6 PM.",
-        'ask_phone': "📞 Please share your phone number to continue:",
-        'btn_phone': "📱 Share Phone Number",
-        'phone_saved': "✅ Phone number saved!",
-        'choose_cafe': "☕ Choose a café:",
-        'menu_header': "Menu for {}:",
-        'added_cart': "🛒 Added: {} × {}\n✅ Press 'Done' when ready.",
-        'cart_empty': "❗ Your cart is empty.",
-        'item_not_found': "❌ Item not found.",
-        'total': "💵 Total",
-        'delivery_fee': "🚚 Delivery Fee",
-        'ask_location': "📍 Please share your location to finalize:",
-        'btn_location': "📍 Share Location",
-        'btn_done': "✅ Done",
-        'btn_cancel': "❌ Cancel Order",
-        'btn_back': "🔙 Back",
-        'order_sent': "✅ Order sent! Wait for confirmation.\n📦 Order No: `{}`",
-        'order_cancelled': "❌ Order cancelled.",
-        'location_error': "❌ Delivery is only available within Werabe city limits.",
-        'admin_broadcast': "📢 Announcement:\n\n{}",
-        
-        # --- NEW MESSAGES FOR ACCEPT/DECLINE ---
-        'order_accepted': "✅ Your Order `{}` has been ACCEPTED! 🚚\nIt will be delivered shortly.",
-        'order_declined': "❌ Your Order `{}` was DECLINED.\nPlease contact support or try again.",
-        'admin_processed': "\n\n👮 Processed by: {}" 
+        # ... (keep your existing keys) ...
+        'btn_profile': "👤 My Profile",
+        'profile_header': "👤 *User Profile*\n\n📞 Phone: `{}`\n🗣️ Language: English\n📍 Location: {}",
+        'btn_switch_lang': "🔄 Switch Language",
+        'btn_edit_phone': "✏️ Change Phone",
+        'location_set': "Set ✅",
+        'location_not_set': "Not Set ❌",
+        'order_id_label': "Order No", # Label for the long ID
+        # ...
     },
     'am': {
-        'choose_lang': "እባክዎ ቋንቋ ይምረጡ / Please choose language:",
-        'welcome': "👋 ወደ ዴሊቨሪ አገልግሎታችን እንኳን በደህና መጡ!",
-        'closed': "⛔ ይቅርታ፣ አሁን ዝግ ነን። በየቀኑ ከጠዋቱ 12 ሰዓት እስከ ማታ 12 ሰዓት ክፍት ነን።",
-        'ask_phone': "📞 ለመቀጠል እባክዎ ስልክ ቁጥርዎን ያጋሩ፡",
-        'btn_phone': "📱 ስልክ ቁጥር ያጋሩ",
-        'phone_saved': "✅ ስልክ ቁጥር ተመዝግቧል!",
-        'choose_cafe': "☕ ካፌ ይምረጡ፡",
-        'menu_header': "የ {} ሜኑ፡",
-        'added_cart': "🛒 ተጨምሯል፡ {} × {}\n✅ ሲጨርሱ 'ጨርሻለሁ' የሚለውን ይጫኑ።",
-        'cart_empty': "❗ ምንም ነገር አልመረጡም።",
-        'item_not_found': "❌ እቃው አልተገኘም።",
-        'total': "💵 ጠቅላላ",
-        'delivery_fee': "🚚 የትራንስፖርት",
-        'ask_location': "📍 ትዕዛዙን ለመጨረስ እባክዎ ያሉበትን ቦታ (Location) ያጋሩ፡",
-        'btn_location': "📍 ቦታ ያጋሩ (Location)",
-        'btn_done': "✅ ጨርሻለሁ",
-        'btn_cancel': "❌ ሰርዝ",
-        'btn_back': "🔙 ተመለስ",
-        'order_sent': "✅ ትዕዛዝዎ ተልኳል! ማረጋገጫ እስኪደርስዎት ይጠብቁ።\n📦 የትዕዛዝ ቁጥር: `{}`",
-        'order_cancelled': "❌ ትዕዛዝ ተሰርዟል።",
-        'location_error': "❌ ዴሊቨሪ የምንሰጠው በወራቤ ከተማ ውስጥ ብቻ ነው።",
-        'admin_broadcast': "📢 ማስታወቂያ፡\n\n{}",
-
-        # --- NEW MESSAGES FOR ACCEPT/DECLINE ---
-        'order_accepted': "✅ ትዕዛዝ ቁጥር `{}` ተቀባይነት አግኝቷል! 🚚\nበቅርቡ ይደርስዎታል።",
-        'order_declined': "❌ ትዕዛዝ ቁጥር `{}` ውድቅ ተደርጓል።\nእባክዎ ይደውሉልን።",
-        'admin_processed': "\n\n👮 አስተናጋጅ: {}"
+        # ... (keep your existing keys) ...
+        'btn_profile': "👤 የእኔ መረጃ (Profile)",
+        'profile_header': "👤 *የግል መረጃ*\n\n📞 ስልክ: `{}`\n🗣️ ቋንቋ: አማርኛ\n📍 አድራሻ: {}",
+        'btn_switch_lang': "🔄 ቋንቋ ቀይር",
+        'btn_edit_phone': "✏️ ስልክ ለመቀየር",
+        'location_set': "ተመዝግቧል ✅",
+        'location_not_set': "አልተመዘገበም ❌",
+        'order_id_label': "ትዕዛዝ ቁጥር",
+        # ...
     }
 }
 
 def get_text(lang, key):
     return TEXTS.get(lang, TEXTS['en']).get(key, key)
-
