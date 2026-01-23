@@ -16,7 +16,6 @@ import geofence
 import menus 
 import languages
 from keep_alive import keep_alive, set_bot_app
-from chapa import Chapa
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -30,7 +29,8 @@ username_map = {}
 pending_payments = {}  # {tx_ref: {chat_id, order_id, order_data}}
 
 # --- CHAPA INITIALIZATION ---
-chapa = Chapa(config.CHAPA_SECRET_KEY)        
+# Using direct API calls for better control
+CHAPA_BASE_URL = "https://api.chapa.co/v1"        
 
 ADMIN_USERNAME = "kanzedin"
 SERVICE_MODE = 'AUTO' 
@@ -373,6 +373,12 @@ async def show_profile(update: Update):
 async def initialize_payment(update: Update, ctx: ContextTypes.DEFAULT_TYPE, chat_id: int, order_id: str, total_price: float, order_data: dict):
     """Initialize Chapa payment for an order"""
     try:
+        # Verify API key is loaded
+        if not config.CHAPA_SECRET_KEY:
+            logger.error("CHAPA_SECRET_KEY is not set in config")
+            await update.message.reply_text("❌ Payment gateway configuration error. Please contact support.")
+            return False
+        
         user = update.effective_user
         data = user_data[chat_id]
         
@@ -384,20 +390,64 @@ async def initialize_payment(update: Update, ctx: ContextTypes.DEFAULT_TYPE, cha
         last_name = user.last_name or ""
         email = f"{chat_id}@telegram.user"  # Placeholder email
         
-        # Initialize payment with Chapa
+        # Initialize payment with Chapa using direct API call
         # Amount should be in ETB (Ethiopian Birr)
-        response = chapa.initialize(
-            email=email,
-            amount=float(total_price),
-            first_name=first_name,
-            last_name=last_name,
-            tx_ref=tx_ref,
-            callback_url=config.CHAPA_WEBHOOK_URL if config.CHAPA_WEBHOOK_URL else None,
-            currency="ETB"
-        )
+        headers = {
+            'Authorization': f'Bearer {config.CHAPA_SECRET_KEY}',
+            'Content-Type': 'application/json'
+        }
         
-        if response and response.get('status') == 'success':
-            checkout_url = response.get('data', {}).get('checkout_url')
+        # Format phone number (remove + and spaces, ensure it's 10 digits starting with 09 or 07)
+        phone = data.get('phone', '').replace('+', '').replace(' ', '').replace('-', '')
+        # If phone starts with country code (251), remove it and add 0
+        if phone.startswith('251') and len(phone) == 12:
+            phone = '0' + phone[3:]
+        # Ensure it's in the right format
+        if not (phone.startswith('09') or phone.startswith('07')):
+            phone = '0912345678'  # Fallback format
+        
+        payload = {
+            'amount': float(total_price),
+            'currency': 'ETB',
+            'email': email,
+            'first_name': first_name,
+            'last_name': last_name,
+            'phone_number': phone,
+            'tx_ref': tx_ref,
+        }
+        
+        # Add callback URL if provided
+        if config.CHAPA_WEBHOOK_URL:
+            payload['callback_url'] = config.CHAPA_WEBHOOK_URL
+        
+        # Log request details (without exposing full key)
+        api_key_preview = config.CHAPA_SECRET_KEY[:15] + "..." if config.CHAPA_SECRET_KEY else "NOT SET"
+        logger.info(f"Chapa API Request - Key: {api_key_preview}, Payload: {payload}")
+        
+        # Make API request
+        try:
+            response = requests.post(
+                f'{CHAPA_BASE_URL}/transaction/initialize',
+                json=payload,
+                headers=headers,
+                timeout=30
+            )
+            
+            # Try to parse JSON response
+            try:
+                response_data = response.json()
+            except:
+                response_data = {'error': f'Invalid JSON response: {response.text[:200]}'}
+            
+            logger.info(f"Chapa API Response Status: {response.status_code}, Data: {response_data}")
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Chapa API Request Exception: {e}")
+            await update.message.reply_text(f"{t(chat_id, 'payment_failed')}\n\nNetwork error: {str(e)}")
+            return False
+        
+        if response.status_code == 200 and response_data.get('status') == 'success':
+            checkout_url = response_data.get('data', {}).get('checkout_url')
             
             # Store pending payment info
             pending_payments[tx_ref] = {
@@ -425,9 +475,25 @@ async def initialize_payment(update: Update, ctx: ContextTypes.DEFAULT_TYPE, cha
             
             return True
         else:
-            error_msg = response.get('message', 'Unknown error') if response else 'No response from payment gateway'
-            logger.error(f"Chapa payment initialization failed: {error_msg} - {response}")
-            await update.message.reply_text(f"{t(chat_id, 'payment_failed')}\n\nError: {error_msg}")
+            # Extract error message
+            if isinstance(response_data, dict):
+                error_msg = response_data.get('message') or response_data.get('error') or response_data.get('status')
+            else:
+                error_msg = str(response_data) if response_data else 'Unknown error'
+            
+            if not error_msg:
+                error_msg = f'HTTP {response.status_code}'
+            
+            logger.error(f"Chapa payment initialization failed: {error_msg} - Status: {response.status_code} - Full Response: {response_data}")
+            
+            # User-friendly error message
+            user_error = f"{t(chat_id, 'payment_failed')}\n\n"
+            if 'invalid' in str(error_msg).lower() or 'unauthorized' in str(error_msg).lower():
+                user_error += "⚠️ API key error. Please check configuration."
+            else:
+                user_error += f"Error: {error_msg}"
+            
+            await update.message.reply_text(user_error)
             return False
             
     except Exception as e:
