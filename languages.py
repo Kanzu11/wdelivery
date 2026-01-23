@@ -29,7 +29,15 @@ TEXTS = {
         'btn_switch_lang': "🔄 Switch Language",
         'btn_edit_phone': "✏️ Change Phone",
         'location_set': "Set ✅",
-        'location_not_set': "Not Set ❌"
+        'location_not_set': "Not Set ❌",
+        'payment_init': "💳 Please complete your payment to confirm the order:",
+        'payment_link': "🔗 Payment Link",
+        'payment_pending': "⏳ Waiting for payment confirmation...",
+        'payment_success': "✅ Payment successful! Your order is being processed.",
+        'payment_failed': "❌ Payment failed. Please try again.",
+        'payment_cancelled': "❌ Payment cancelled. Order not placed.",
+        'btn_pay_now': "💳 Pay Now",
+        'btn_cancel_payment': "❌ Cancel Payment"
     },
     'am': {
         'choose_lang': "እባክዎ ቋንቋ ይምረጡ / Please choose language:",
@@ -61,7 +69,15 @@ TEXTS = {
         'btn_switch_lang': "🔄 ቋንቋ ቀይር",
         'btn_edit_phone': "✏️ ስልክ ለመቀየር",
         'location_set': "ተመዝግቧል ✅",
-        'location_not_set': "አልተመዘገበም ❌"
+        'location_not_set': "አልተመዘገበም ❌",
+        'payment_init': "💳 ትዕዛዝዎን ለመያዝ እባክዎ ክፍያዎን ያጠናቅቁ፡",
+        'payment_link': "🔗 የክፍያ አድራሻ",
+        'payment_pending': "⏳ የክፍያ ማረጋገጫ እየተጠበቀ ነው...",
+        'payment_success': "✅ ክፍያዎ በተሳካ ሁኔታ ተጠናቋል! ትዕዛዝዎ እየተሰራ ነው።",
+        'payment_failed': "❌ ክፍያዎ አልተሳካም። እባክዎ እንደገና ይሞክሩ።",
+        'payment_cancelled': "❌ ክፍያዎ ተሰርዟል። ትዕዛዝ አልተቀመጠም።",
+        'btn_pay_now': "💳 አሁን ይክፈሉ",
+        'btn_cancel_payment': "❌ ክፍያ ሰርዝ"
     }
 }
 

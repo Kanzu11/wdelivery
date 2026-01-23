@@ -1,6 +1,7 @@
 import logging
 import datetime
 import uuid
+import requests
 from telegram import (
     Update, KeyboardButton, ReplyKeyboardMarkup,
     InlineKeyboardButton, InlineKeyboardMarkup, Contact
@@ -14,7 +15,8 @@ import config
 import geofence
 import menus 
 import languages
-from keep_alive import keep_alive
+from keep_alive import keep_alive, set_bot_app
+from chapa import Chapa
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -24,7 +26,11 @@ logger = logging.getLogger(__name__)
 
 # --- STORAGE ---
 user_data = {}           
-username_map = {}        
+username_map = {}
+pending_payments = {}  # {tx_ref: {chat_id, order_id, order_data}}
+
+# --- CHAPA INITIALIZATION ---
+chapa = Chapa(config.CHAPA_SECRET_KEY)        
 
 ADMIN_USERNAME = "kanzedin"
 SERVICE_MODE = 'AUTO' 
@@ -364,6 +370,179 @@ async def show_profile(update: Update):
     
     await update.message.reply_text(msg, parse_mode='Markdown', reply_markup=kb)
 
+async def initialize_payment(update: Update, ctx: ContextTypes.DEFAULT_TYPE, chat_id: int, order_id: str, total_price: float, order_data: dict):
+    """Initialize Chapa payment for an order"""
+    try:
+        user = update.effective_user
+        data = user_data[chat_id]
+        
+        # Generate unique transaction reference
+        tx_ref = f"werabe_{order_id.replace('#', '')}_{uuid.uuid4().hex[:8]}"
+        
+        # Prepare customer info
+        first_name = user.first_name or "Customer"
+        last_name = user.last_name or ""
+        email = f"{chat_id}@telegram.user"  # Placeholder email
+        
+        # Initialize payment with Chapa
+        # Amount should be in ETB (Ethiopian Birr)
+        response = chapa.initialize(
+            email=email,
+            amount=float(total_price),
+            first_name=first_name,
+            last_name=last_name,
+            tx_ref=tx_ref,
+            callback_url=config.CHAPA_WEBHOOK_URL if config.CHAPA_WEBHOOK_URL else None,
+            currency="ETB"
+        )
+        
+        if response and response.get('status') == 'success':
+            checkout_url = response.get('data', {}).get('checkout_url')
+            
+            # Store pending payment info
+            pending_payments[tx_ref] = {
+                'chat_id': chat_id,
+                'order_id': order_id,
+                'order_data': order_data,
+                'total_price': total_price,
+                'timestamp': datetime.datetime.now()
+            }
+            
+            # Send payment link to user
+            payment_msg = f"{t(chat_id, 'payment_init')}\n\n🔗 {checkout_url}\n\n{t(chat_id, 'payment_pending')}"
+            kb = InlineKeyboardMarkup([[
+                InlineKeyboardButton(t(chat_id, 'btn_pay_now'), url=checkout_url)
+            ], [
+                InlineKeyboardButton("✅ Check Payment Status", callback_data=f"check_payment_{tx_ref}"),
+                InlineKeyboardButton(t(chat_id, 'btn_cancel_payment'), callback_data=f"cancel_pay_{tx_ref}")
+            ]])
+            
+            await update.message.reply_text(payment_msg, reply_markup=kb, parse_mode="Markdown")
+            
+            # Store tx_ref in user data for verification
+            data['pending_tx_ref'] = tx_ref
+            data['pending_order_id'] = order_id
+            
+            return True
+        else:
+            error_msg = response.get('message', 'Unknown error') if response else 'No response from payment gateway'
+            logger.error(f"Chapa payment initialization failed: {error_msg} - {response}")
+            await update.message.reply_text(f"{t(chat_id, 'payment_failed')}\n\nError: {error_msg}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"Payment initialization error: {e}")
+        await update.message.reply_text(t(chat_id, 'payment_failed'))
+        return False
+
+async def verify_payment(tx_ref: str, ctx: ContextTypes.DEFAULT_TYPE = None):
+    """Verify payment status with Chapa"""
+    try:
+        # Verify payment using Chapa API
+        headers = {
+            'Authorization': f'Bearer {config.CHAPA_SECRET_KEY}'
+        }
+        response = requests.get(
+            f'https://api.chapa.co/v1/transaction/verify/{tx_ref}',
+            headers=headers
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            if data.get('status') == 'success' and data.get('data', {}).get('status') == 'successful':
+                return True
+        return False
+    except Exception as e:
+        logger.error(f"Payment verification error: {e}")
+        return False
+
+async def complete_order_after_payment(tx_ref: str, bot_instance):
+    """Complete order after successful payment"""
+    if tx_ref not in pending_payments:
+        return False
+    
+    payment_info = pending_payments[tx_ref]
+    chat_id = payment_info['chat_id']
+    order_id = payment_info['order_id']
+    order_data = payment_info['order_data']
+    total_price = payment_info['total_price']
+    
+    try:
+        data = user_data[chat_id]
+        lat = data['location']['lat']
+        lon = data['location']['lon']
+        
+        cart_items = []
+        for (cafe, item), qty in order_data.items():
+            cart_items.append(f"• {item} x{qty} ({cafe})")
+        
+        cart_summary = "\n".join(cart_items)
+        
+        # Get user info
+        try:
+            user_chat = await bot_instance.get_chat(chat_id)
+            user_name = user_chat.full_name or 'Customer'
+        except:
+            user_name = 'Customer'
+        
+        customer_info = (
+            f"👤 {user_name}\n"
+            f"📞 {data['phone']}\n"
+            f"💳 Payment: ✅ Verified (Ref: {tx_ref})"
+        )
+
+        mapslink = f"https://www.google.com/maps/search/?api=1&query={lat},{lon}"
+        map_msg = f"📍 Customer location for Order ID: `{order_id}`: [Open Map]({mapslink})"
+        
+        await bot_instance.send_message(
+            chat_id=config.CHANNEL_ID,
+            text=map_msg,
+            parse_mode='Markdown',
+            disable_web_page_preview=False 
+        )
+
+        admin_msg = f"""📦 *ORDER DETAILS {order_id}* (PAID ✅)
+    
+{customer_info}
+
+🛒 *ITEMS:*
+{cart_summary}
+
+💵 *Total:* {total_price} ETB
+💳 *Payment Status:* ✅ Paid
+"""
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Accept", callback_data=f"accept_{chat_id}_{order_id}"),
+            InlineKeyboardButton("❌ Decline", callback_data=f"decline_{chat_id}_{order_id}")
+        ]])
+        
+        await bot_instance.send_message(
+            chat_id=config.CHANNEL_ID, 
+            text=admin_msg, 
+            parse_mode='Markdown', 
+            reply_markup=kb
+        )
+
+        await bot_instance.send_message(
+            chat_id=chat_id,
+            text=t(chat_id, 'payment_success') + "\n\n" + t(chat_id, 'order_sent').format(order_id),
+            parse_mode="Markdown"
+        )
+        
+        # Clear order data
+        data['orders'] = {}
+        data['current_cafe'] = None
+        data.pop('pending_tx_ref', None)
+        data.pop('pending_order_id', None)
+        
+        # Remove from pending payments
+        del pending_payments[tx_ref]
+        
+        return True
+    except Exception as e:
+        logger.error(f"Failed to complete order after payment: {e}")
+        return False
+
 async def location(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     track_username(update)
     chat_id = update.effective_chat.id
@@ -400,60 +579,23 @@ async def location(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     
     total_price = 39
     cart_items = []
+    order_data_copy = {}  # Copy for payment
     for (cafe, item), qty in data['orders'].items():
         price = menus.CAFES.get(cafe, {}).get(item, 0)
         total_price += price * qty
         cart_items.append(f"• {item} x{qty} ({cafe})")
+        order_data_copy[(cafe, item)] = qty
     
     cart_summary = "\n".join(cart_items)
     
-    customer_info = (
-        f"👤 {update.effective_user.full_name}\n"
-        f"📞 {data['phone']}\n"
-        f"@{update.effective_user.username or 'NoUsername'}"
-    )
-
-    try:
-        mapslink = f"https://www.google.com/maps/search/?api=1&query={lat},{lon}"
-        map_msg = f"📍 Customer location for Order ID: `{order_id}`: [Open Map]({mapslink})"
-        
-        await ctx.bot.send_message(
-            chat_id=config.CHANNEL_ID,
-            text=map_msg,
-            parse_mode='Markdown',
-            disable_web_page_preview=False 
-        )
-
-        admin_msg = f"""📦 *ORDER DETAILS {order_id}*
+    # Show order summary and initiate payment
+    summary_msg = f"{cart_summary}\n\n{t(chat_id, 'delivery_fee')}: 39 ETB\n*{t(chat_id, 'total')}: {total_price} ETB*"
+    await update.message.reply_text(summary_msg, parse_mode="Markdown")
     
-{customer_info}
+    # Initialize payment
+    await initialize_payment(update, ctx, chat_id, order_id, total_price, order_data_copy)
 
-🛒 *ITEMS:*
-{cart_summary}
-
-💵 *Total:* {total_price} ETB
-"""
-        kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✅ Accept", callback_data=f"accept_{chat_id}_{order_id}"),
-            InlineKeyboardButton("❌ Decline", callback_data=f"decline_{chat_id}_{order_id}")
-        ]])
-        
-        await ctx.bot.send_message(
-            chat_id=config.CHANNEL_ID, 
-            text=admin_msg, 
-            parse_mode='Markdown', 
-            reply_markup=kb
-        )
-
-        await update.message.reply_text(t(chat_id, 'order_sent').format(order_id), parse_mode="Markdown")
-        
-        data['orders'] = {}
-        data['current_cafe'] = None
-        await show_main_menu(update)
-
-    except Exception as e:
-        logger.error(f"FAILED TO SEND ORDER: {e}") 
-        await update.message.reply_text("❌ System Error. Please contact support.")
+    # Note: Order will be sent to admin only after payment verification
 
 async def accept_or_decline(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -482,18 +624,73 @@ async def accept_or_decline(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.message.edit_text(new_text, reply_markup=None)
         await ctx.bot.send_message(uid, t(uid, 'order_declined').format(order_id), parse_mode="Markdown")
 
+async def handle_payment_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Handle payment-related callbacks"""
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    chat_id = query.from_user.id
+    
+    # Handle payment cancellation
+    if data.startswith("cancel_pay_"):
+        tx_ref = data.replace("cancel_pay_", "")
+        if tx_ref in pending_payments:
+            user_data[chat_id]['orders'] = {}
+            user_data[chat_id]['current_cafe'] = None
+            user_data[chat_id].pop('pending_tx_ref', None)
+            user_data[chat_id].pop('pending_order_id', None)
+            del pending_payments[tx_ref]
+            await query.message.edit_text(t(chat_id, 'payment_cancelled'))
+            await show_main_menu(update)
+    
+    # Handle payment verification check
+    elif data.startswith("check_payment_"):
+        tx_ref = data.replace("check_payment_", "")
+        if await verify_payment(tx_ref, ctx):
+            await complete_order_after_payment(tx_ref, ctx.bot)
+            await query.message.edit_text(t(chat_id, 'payment_success'))
+        else:
+            await query.answer("Payment not yet confirmed. Please wait...", show_alert=True)
+
+async def check_payment(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Command to manually check payment status"""
+    chat_id = update.effective_chat.id
+    data = user_data.get(chat_id, {})
+    
+    tx_ref = data.get('pending_tx_ref')
+    if not tx_ref:
+        await update.message.reply_text("❌ No pending payment found.")
+        return
+    
+    if tx_ref not in pending_payments:
+        await update.message.reply_text("❌ Payment reference not found.")
+        return
+    
+    # Verify payment
+    if await verify_payment(tx_ref, ctx):
+        await complete_order_after_payment(tx_ref, ctx.bot)
+    else:
+        await update.message.reply_text(t(chat_id, 'payment_pending'))
+
 def main():
     keep_alive()
     app = ApplicationBuilder().token(config.BOT_TOKEN).build()
+    
+    # Set bot app reference for webhook
+    set_bot_app(app)
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("broadcast", admin_broadcast))
     app.add_handler(CommandHandler("dm", admin_dm)) # <-- Added DM Handler
     app.add_handler(CommandHandler(["open", "close", "auto"], admin_control))
+    app.add_handler(CommandHandler("checkpayment", check_payment))  # Manual payment check
     
     app.add_handler(MessageHandler(filters.CONTACT, contact))
     app.add_handler(MessageHandler(filters.LOCATION, location))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    
+    # Payment and order callbacks
+    app.add_handler(CallbackQueryHandler(handle_payment_callback, pattern="^(cancel_pay_|check_payment_)"))
     app.add_handler(CallbackQueryHandler(accept_or_decline))
     
     print("Bot is running...")
