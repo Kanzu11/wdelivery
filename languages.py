@@ -29,19 +29,7 @@ TEXTS = {
         'btn_switch_lang': "🔄 Switch Language",
         'btn_edit_phone': "✏️ Change Phone",
         'location_set': "Set ✅",
-        'location_not_set': "Not Set ❌",
-        'payment_request': "💳 *Payment Required*\n\nTotal Amount: *{} ETB*\nOrder ID: `{}`\n\nPlease complete the payment to confirm your order.",
-        'btn_pay_now': "💳 Pay Now",
-        'btn_verify_payment': "✅ Verify Payment",
-        'payment_instructions': "📝 *Instructions:*\n1. Click 'Pay Now' button\n2. Complete payment on Chapa\n3. Return here and click 'Verify Payment'\n\nYour order will be processed after payment verification.",
-        'payment_error': "❌ Payment service is currently unavailable. Please contact support.",
-        'payment_init_error': "❌ Failed to initialize payment. Please try again or contact support.",
-        'payment_success': "✅ Payment successful!\n\nYour order `{}` has been confirmed and sent to the kitchen. You will receive a confirmation shortly.",
-        'payment_not_completed': "⏳ Payment not yet completed. Please complete the payment first, then verify.",
-        'payment_verification_failed': "❌ Payment verification failed. Please try again or contact support if you've already paid.",
-        'no_pending_order': "❌ No pending order found.",
-        'payment_ref_mismatch': "❌ Payment reference mismatch. Please try again.",
-        'verifying_payment': "⏳ Verifying your payment..."
+        'location_not_set': "Not Set ❌"
     },
     'am': {
         'choose_lang': "እባክዎ ቋንቋ ይምረጡ / Please choose language:",
@@ -73,19 +61,7 @@ TEXTS = {
         'btn_switch_lang': "🔄 ቋንቋ ቀይር",
         'btn_edit_phone': "✏️ ስልክ ለመቀየር",
         'location_set': "ተመዝግቧል ✅",
-        'location_not_set': "አልተመዘገበም ❌",
-        'payment_request': "💳 *ክፍያ ያስፈልጋል*\n\nጠቅላላ መጠን: *{} ብር*\nየትዕዛዝ ቁጥር: `{}`\n\nትዕዛዝዎን ለማረጋገጥ እባክዎ ክፍያውን ያጠናቅቁ።",
-        'btn_pay_now': "💳 አሁን ይክፈሉ",
-        'btn_verify_payment': "✅ ክፍያ ያረጋግጡ",
-        'payment_instructions': "📝 *መመሪያዎች:*\n1. 'አሁን ይክፈሉ' የሚለውን ይጫኑ\n2. በቻፓ ላይ ክፍያውን ያጠናቅቁ\n3. ወደዚህ ተመለስ እና 'ክፍያ ያረጋግጡ' ይጫኑ\n\nክፍያው ከተረጋገጠ በኋላ ትዕዛዝዎ ይቀርባል።",
-        'payment_error': "❌ የክፍያ አገልግሎት አሁን አይገኝም። እባክዎ ድጋፍ ያግኙ።",
-        'payment_init_error': "❌ ክፍያ ማስጀመር አልተሳካም። እባክዎ እንደገና ይሞክሩ ወይም ድጋፍ ያግኙ።",
-        'payment_success': "✅ ክፍያው ተሳክቷል!\n\nየትዕዛዝ ቁጥር `{}` ተረጋግጧል እና ወደ ኩሽና ተልኳል። በቅርቡ ማረጋገጫ ይደርስዎታል።",
-        'payment_not_completed': "⏳ ክፍያው እስካሁን አልተጠናቀቀም። እባክዎ በመጀመሪያ ክፍያውን ያጠናቅቁ፣ ከዚያም ያረጋግጡ።",
-        'payment_verification_failed': "❌ የክፍያ ማረጋገጥ አልተሳካም። እባክዎ እንደገና ይሞክሩ ወይም ከዚህ በፊት ከከፈሉ ድጋፍ ያግኙ።",
-        'no_pending_order': "❌ ምንም በመጠባበቅ ላይ ያለ ትዕዛዝ አልተገኘም።",
-        'payment_ref_mismatch': "❌ የክፍያ ማመሳከሪያ አይጣጣምም። እባክዎ እንደገና ይሞክሩ።",
-        'verifying_payment': "⏳ ክፍያዎን እያረጋገጥን ነው..."
+        'location_not_set': "አልተመዘገበም ❌"
     }
 }
 

@@ -14,7 +14,6 @@ import config
 import geofence
 import menus 
 import languages
-import payment
 from keep_alive import keep_alive
 
 logging.basicConfig(
@@ -150,23 +149,6 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     
     await check_user_exists(update, chat_id)
-    
-    # Handle payment success return
-    if ctx.args and ctx.args[0] == 'payment_success':
-        if chat_id in user_data and 'pending_order' in user_data[chat_id]:
-            pending_order = user_data[chat_id]['pending_order']
-            tx_ref = pending_order.get('tx_ref')
-            if tx_ref:
-                # Create a verification message
-                kb = InlineKeyboardMarkup([[
-                    InlineKeyboardButton(t(chat_id, 'btn_verify_payment'), callback_data=f"verify_{tx_ref}")
-                ]])
-                await update.message.reply_text(
-                    t(chat_id, 'payment_instructions'),
-                    reply_markup=kb,
-                    parse_mode="Markdown"
-                )
-                return
 
     # 1. Language Selection (Always First)
     if not user_data[chat_id]['lang']:
@@ -425,132 +407,13 @@ async def location(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     
     cart_summary = "\n".join(cart_items)
     
-    # Initialize payment
-    if not config.CHAPA_TEST_TOKEN:
-        await update.message.reply_text(t(chat_id, 'payment_error'))
-        return
-    
-    # Prepare customer info for payment
-    user = update.effective_user
-    first_name = user.first_name or "Customer"
-    last_name = user.last_name or ""
-    email = f"user_{chat_id}@werabe.local"  # Placeholder email if not available
-    phone = data['phone']
-    
-    # Generate callback and return URLs (you may want to set up a webhook server for callback_url)
-    callback_url = f"https://webhook.site/unique-id"  # Replace with your actual callback URL
-    return_url = f"https://t.me/{ctx.bot.username}?start=payment_success"
-    
-    # Initialize Chapa payment
-    payment_result = await payment.initialize_chapa_payment(
-        amount=total_price,
-        email=email,
-        first_name=first_name,
-        last_name=last_name,
-        phone_number=phone,
-        callback_url=callback_url,
-        return_url=return_url,
-        chapa_token=config.CHAPA_TEST_TOKEN
-    )
-    
-    if not payment_result or not payment_result.get('checkout_url'):
-        logger.error(f"Failed to initialize payment for order {order_id}")
-        await update.message.reply_text(t(chat_id, 'payment_init_error'))
-        return
-    
-    # Store order data with payment reference
-    tx_ref = payment_result['tx_ref']
-    data['pending_order'] = {
-        'order_id': order_id,
-        'total_price': total_price,
-        'cart_items': cart_items,
-        'location': {'lat': lat, 'lon': lon},
-        'tx_ref': tx_ref,
-        'customer_info': {
-            'name': f"{first_name} {last_name}".strip(),
-            'phone': phone,
-            'username': user.username or 'NoUsername'
-        }
-    }
-    
-    # Send payment link to user
-    payment_url = payment_result['checkout_url']
-    payment_msg = t(chat_id, 'payment_request').format(total_price, order_id)
-    
-    kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton(t(chat_id, 'btn_pay_now'), url=payment_url),
-        InlineKeyboardButton(t(chat_id, 'btn_verify_payment'), callback_data=f"verify_{tx_ref}")
-    ]])
-    
-    await update.message.reply_text(
-        payment_msg,
-        reply_markup=kb,
-        parse_mode="Markdown"
-    )
-    
-    await update.message.reply_text(
-        t(chat_id, 'payment_instructions'),
-        parse_mode="Markdown"
+    customer_info = (
+        f"👤 {update.effective_user.full_name}\n"
+        f"📞 {data['phone']}\n"
+        f"@{update.effective_user.username or 'NoUsername'}"
     )
 
-async def verify_payment_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Handle payment verification callback"""
-    query = update.callback_query
-    await query.answer()
-    
-    if not query.data.startswith("verify_"): return
-    
-    chat_id = query.from_user.id
-    tx_ref = query.data.replace("verify_", "")
-    
-    if chat_id not in user_data or 'pending_order' not in user_data[chat_id]:
-        await query.message.reply_text(t(chat_id, 'no_pending_order'))
-        return
-    
-    pending_order = user_data[chat_id]['pending_order']
-    
-    if pending_order.get('tx_ref') != tx_ref:
-        await query.message.reply_text(t(chat_id, 'payment_ref_mismatch'))
-        return
-    
-    # Verify payment with Chapa
-    await query.message.reply_text(t(chat_id, 'verifying_payment'))
-    
-    if not config.CHAPA_TEST_TOKEN:
-        await query.message.reply_text(t(chat_id, 'payment_error'))
-        return
-    
-    verification_result = await payment.verify_chapa_payment(tx_ref, config.CHAPA_TEST_TOKEN)
-    
-    if verification_result and verification_result.get('status') == 'success':
-        payment_data = verification_result.get('data', {})
-        if payment_data.get('status') == 'successful':
-            # Payment successful - send order to channel
-            await send_order_to_channel(ctx, chat_id, pending_order)
-            await query.message.reply_text(t(chat_id, 'payment_success').format(pending_order['order_id']), parse_mode="Markdown")
-            
-            # Clear pending order
-            user_data[chat_id]['orders'] = {}
-            user_data[chat_id]['current_cafe'] = None
-            del user_data[chat_id]['pending_order']
-            
-            await show_main_menu(update)
-        else:
-            await query.message.reply_text(t(chat_id, 'payment_not_completed'))
-    else:
-        await query.message.reply_text(t(chat_id, 'payment_verification_failed'))
-
-
-async def send_order_to_channel(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int, order_data: dict):
-    """Send order details to admin channel after payment verification"""
     try:
-        order_id = order_data['order_id']
-        total_price = order_data['total_price']
-        cart_items = order_data['cart_items']
-        location = order_data['location']
-        customer_info_dict = order_data['customer_info']
-        
-        lat, lon = location['lat'], location['lon']
         mapslink = f"https://www.google.com/maps/search/?api=1&query={lat},{lon}"
         map_msg = f"📍 Customer location for Order ID: `{order_id}`: [Open Map]({mapslink})"
         
@@ -561,14 +424,6 @@ async def send_order_to_channel(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int, or
             disable_web_page_preview=False 
         )
 
-        customer_info = (
-            f"👤 {customer_info_dict['name']}\n"
-            f"📞 {customer_info_dict['phone']}\n"
-            f"@{customer_info_dict['username']}"
-        )
-        
-        cart_summary = "\n".join(cart_items)
-        
         admin_msg = f"""📦 *ORDER DETAILS {order_id}*
     
 {customer_info}
@@ -577,7 +432,6 @@ async def send_order_to_channel(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int, or
 {cart_summary}
 
 💵 *Total:* {total_price} ETB
-✅ *Payment: Verified*
 """
         kb = InlineKeyboardMarkup([[
             InlineKeyboardButton("✅ Accept", callback_data=f"accept_{chat_id}_{order_id}"),
@@ -590,18 +444,21 @@ async def send_order_to_channel(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int, or
             parse_mode='Markdown', 
             reply_markup=kb
         )
-    except Exception as e:
-        logger.error(f"FAILED TO SEND ORDER TO CHANNEL: {e}")
 
+        await update.message.reply_text(t(chat_id, 'order_sent').format(order_id), parse_mode="Markdown")
+        
+        data['orders'] = {}
+        data['current_cafe'] = None
+        await show_main_menu(update)
+
+    except Exception as e:
+        logger.error(f"FAILED TO SEND ORDER: {e}") 
+        await update.message.reply_text("❌ System Error. Please contact support.")
 
 async def accept_or_decline(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
-    
-    if data.startswith("verify_"):
-        await verify_payment_callback(update, ctx)
-        return
     
     if not (data.startswith("accept_") or data.startswith("decline_")): return
 

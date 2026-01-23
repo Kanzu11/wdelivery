@@ -5,7 +5,6 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 CHANNEL_ID = os.getenv('CHANNEL_ID')
-CHAPA_TEST_TOKEN = os.getenv('chapa_test_token')
 
 # Werabe location boundaries
 MIN_LAT, MAX_LAT = 7.8500, 8.0000
