@@ -29,7 +29,16 @@ TEXTS = {
         'btn_switch_lang': "🔄 Switch Language",
         'btn_edit_phone': "✏️ Change Phone",
         'location_set': "Set ✅",
-        'location_not_set': "Not Set ❌"
+        'location_not_set': "Not Set ❌",
+        'payment_init': "💳 Please complete payment to confirm your order.\n\n💰 Total: {} ETB",
+        'btn_pay': "💳 Pay Now",
+        'payment_processing': "⏳ Processing your payment...",
+        'payment_success': "✅ Payment successful! Your order is being processed.",
+        'payment_failed': "❌ Payment failed. Please try again.",
+        'payment_pending': "⏳ Payment is pending. Please complete the payment.",
+        'order_paid': "💵 Payment Status: Paid",
+        'telebirr_ussd_prompt': "A USSD prompt has been sent to your Telebirr account. Please check your phone and authorize the payment.",
+        'telebirr_instruction': "📱 Check your phone for a USSD prompt from Telebirr. Authorize the payment to complete your order."
     },
     'am': {
         'choose_lang': "እባክዎ ቋንቋ ይምረጡ / Please choose language:",
@@ -61,7 +70,16 @@ TEXTS = {
         'btn_switch_lang': "🔄 ቋንቋ ቀይር",
         'btn_edit_phone': "✏️ ስልክ ለመቀየር",
         'location_set': "ተመዝግቧል ✅",
-        'location_not_set': "አልተመዘገበም ❌"
+        'location_not_set': "አልተመዘገበም ❌",
+        'payment_init': "💳 ትዕዛዝዎን ለማረጋገጥ እባክዎ ክፍያ ያጠናቁቁ።\n\n💰 ጠቅላላ: {} ብር",
+        'btn_pay': "💳 አሁን ይክፈሉ",
+        'payment_processing': "⏳ ክፍያዎ እየተሰራ ነው...",
+        'payment_success': "✅ ክፍያዎ በተሳካ ሁኔታ ተጠናቋል! ትዕዛዝዎ እየተሰራ ነው።",
+        'payment_failed': "❌ ክፍያዎ አልተሳካም። እባክዎ እንደገና ይሞክሩ።",
+        'payment_pending': "⏳ ክፍያዎ እየጠበቀ ነው። እባክዎ ክፍያውን ያጠናቁቁ።",
+        'order_paid': "💵 የክፍያ ሁኔታ: ተከፍሏል",
+        'telebirr_ussd_prompt': "ወደ ቴሌቢር ሂሳብዎ የUSSD ማሳወቂያ ተልኳል። እባክዎ ስልክዎን ይመልከቱ እና ክፍያውን ያረጋግጡ።",
+        'telebirr_instruction': "📱 ስልክዎን ይመልከቱ ለቴሌቢር የUSSD ማሳወቂያ። ትዕዛዝዎን ለማጠናቀቅ ክፍያውን ያረጋግጡ።"
     }
 }
 

@@ -14,6 +14,7 @@ import config
 import geofence
 import menus 
 import languages
+import chapa
 from keep_alive import keep_alive
 
 logging.basicConfig(
@@ -405,16 +406,137 @@ async def location(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         total_price += price * qty
         cart_items.append(f"• {item} x{qty} ({cafe})")
     
-    cart_summary = "\n".join(cart_items)
-    
-    customer_info = (
-        f"👤 {update.effective_user.full_name}\n"
-        f"📞 {data['phone']}\n"
-        f"@{update.effective_user.username or 'NoUsername'}"
-    )
+    # Store order details for payment
+    data['pending_order'] = {
+        'order_id': order_id,
+        'total_price': total_price,
+        'cart_items': cart_items,
+        'location': {'lat': lat, 'lon': lon}
+    }
 
+    # Initialize Telebirr payment
     try:
-        mapslink = f"https://www.google.com/maps/search/?api=1&query={lat},{lon}"
+        user = update.effective_user
+        full_name = user.full_name.split(' ', 1) if user.full_name else ['Customer', '']
+        first_name = full_name[0]
+        last_name = full_name[1] if len(full_name) > 1 else ''
+        
+        payment_result = await chapa.initialize_payment(
+            amount=total_price,
+            phone=data['phone'],
+            tx_ref=order_id.replace('#', ''),
+            email=f"{chat_id}@telegram.local",
+            first_name=first_name,
+            last_name=last_name
+        )
+        
+        if payment_result.get('success'):
+            tx_ref = payment_result.get('tx_ref')
+            payment_message = payment_result.get('message', '')
+            
+            # Store payment reference
+            data['pending_order']['tx_ref'] = tx_ref
+            data['pending_order']['payment_status'] = 'pending'
+            
+            # Send USSD prompt notification to user
+            payment_msg = t(chat_id, 'payment_init').format(total_price)
+            ussd_notification = f"\n\n📱 {t(chat_id, 'telebirr_ussd_prompt')}\n\n{payment_message}"
+            
+            # Send verification button
+            verify_kb = InlineKeyboardMarkup([[
+                InlineKeyboardButton("✅ Verify Payment", callback_data=f"verify_payment_{chat_id}_{tx_ref}")
+            ]])
+            
+            await update.message.reply_text(
+                payment_msg + ussd_notification,
+                reply_markup=verify_kb,
+                parse_mode='Markdown'
+            )
+            
+            # Also send a reminder message
+            await update.message.reply_text(
+                t(chat_id, 'payment_pending') + "\n\n" + t(chat_id, 'telebirr_instruction')
+            )
+        else:
+            error_msg = payment_result.get('error', 'Payment initialization failed')
+            logger.error(f"Payment init error: {error_msg}")
+            await update.message.reply_text(
+                t(chat_id, 'payment_failed') + f"\n\nError: {error_msg}"
+            )
+            
+    except Exception as e:
+        logger.error(f"FAILED TO INITIALIZE PAYMENT: {e}")
+        await update.message.reply_text("❌ Payment system error. Please contact support.")
+
+async def verify_payment_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Handle payment verification button click"""
+    query = update.callback_query
+    await query.answer()
+    
+    if not query.data.startswith("verify_payment_"): return
+    
+    try:
+        _, _, chat_id_str, tx_ref = query.data.split("_", 3)
+        chat_id = int(chat_id_str)
+    except Exception as e:
+        logger.error(f"Error parsing verify_payment callback: {e}")
+        return
+    
+    data = user_data.get(chat_id)
+    if not data or not data.get('pending_order'):
+        await query.edit_message_text("❌ Order not found. Please start a new order.")
+        return
+    
+    pending_order = data['pending_order']
+    
+    # Verify payment
+    await query.edit_message_text(t(chat_id, 'payment_processing'))
+    
+    verification_result = await chapa.verify_payment(tx_ref)
+    
+    if verification_result.get('success') and verification_result.get('verified'):
+        # Payment successful - send order to admin
+        await send_order_to_admin(ctx, chat_id, pending_order, data)
+        
+        await query.edit_message_text(t(chat_id, 'payment_success'))
+        await ctx.bot.send_message(
+            chat_id,
+            t(chat_id, 'order_sent').format(pending_order['order_id']),
+            parse_mode="Markdown"
+        )
+        
+        # Clear pending order
+        data['orders'] = {}
+        data['current_cafe'] = None
+        data['pending_order'] = None
+        
+        # Send main menu message
+        await ctx.bot.send_message(chat_id, t(chat_id, 'choose_cafe'), reply_markup=ReplyKeyboardMarkup(
+            [[c] for c in menus.CAFES.keys()] + [[t(chat_id, 'btn_profile')]],
+            resize_keyboard=True
+        ))
+    else:
+        await query.edit_message_text(
+            t(chat_id, 'payment_pending') + "\n\n" +
+            "Please complete the payment and try again."
+        )
+
+async def send_order_to_admin(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int, order_data: dict, user_data_dict: dict):
+    """Send order details to admin channel after payment verification"""
+    try:
+        order_id = order_data['order_id']
+        total_price = order_data['total_price']
+        cart_summary = "\n".join(order_data['cart_items'])
+        location = order_data['location']
+        
+        # Get user info
+        user_info = user_data_dict
+        customer_info = (
+            f"👤 User ID: {chat_id}\n"
+            f"📞 {user_info.get('phone', 'N/A')}\n"
+        )
+        
+        mapslink = f"https://www.google.com/maps/search/?api=1&query={location['lat']},{location['lon']}"
         map_msg = f"📍 Customer location for Order ID: `{order_id}`: [Open Map]({mapslink})"
         
         await ctx.bot.send_message(
@@ -432,6 +554,7 @@ async def location(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 {cart_summary}
 
 💵 *Total:* {total_price} ETB
+{t(user_data_dict.get('lang', 'en'), 'order_paid')}
 """
         kb = InlineKeyboardMarkup([[
             InlineKeyboardButton("✅ Accept", callback_data=f"accept_{chat_id}_{order_id}"),
@@ -444,21 +567,18 @@ async def location(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             parse_mode='Markdown', 
             reply_markup=kb
         )
-
-        await update.message.reply_text(t(chat_id, 'order_sent').format(order_id), parse_mode="Markdown")
-        
-        data['orders'] = {}
-        data['current_cafe'] = None
-        await show_main_menu(update)
-
     except Exception as e:
-        logger.error(f"FAILED TO SEND ORDER: {e}") 
-        await update.message.reply_text("❌ System Error. Please contact support.")
+        logger.error(f"FAILED TO SEND ORDER TO ADMIN: {e}")
+        raise
 
 async def accept_or_decline(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
+    
+    if data.startswith("verify_payment_"):
+        await verify_payment_callback(update, ctx)
+        return
     
     if not (data.startswith("accept_") or data.startswith("decline_")): return
 
