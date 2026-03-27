@@ -342,7 +342,7 @@ async def request_location(update: Update):
     kb = ReplyKeyboardMarkup(
         [[KeyboardButton(t(chat_id, 'btn_location'), request_location=True)], 
          [t(chat_id, 'btn_cancel'), t(chat_id, 'btn_back')]],
-        resize_keyboard=True, one_time_keyboard=True
+        resize_keyboard=True, one_time_keyboard=False
     )
     
     data['awaiting_location'] = True
