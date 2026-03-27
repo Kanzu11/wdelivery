@@ -66,7 +66,7 @@ async def check_is_closed(update, chat_id):
 
 async def ask_for_phone(update, chat_id):
     btn_text = t(chat_id, 'btn_phone')
-    kb = ReplyKeyboardMarkup([[KeyboardButton(btn_text, request_contact=True)]], resize_keyboard=True, one_time_keyboard=True)
+    kb = ReplyKeyboardMarkup([[KeyboardButton(btn_text, request_contact=True)]], resize_keyboard=True, one_time_keyboard=False)
     await update.message.reply_text(t(chat_id, 'ask_phone'), reply_markup=kb)
 
 async def check_user_exists(update, chat_id):
