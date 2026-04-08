@@ -29,7 +29,8 @@ TEXTS = {
         'btn_switch_lang': "🔄 Switch Language",
         'btn_edit_phone': "✏️ Change Phone",
         'location_set': "Set ✅",
-        'location_not_set': "Not Set ❌"
+        'location_not_set': "Not Set ❌",
+        'rate_limited': "⏳ Too many requests. Please wait {} seconds and try again."
     },
     'am': {
         'choose_lang': "እባክዎ ቋንቋ ይምረጡ / Please choose language:",
@@ -61,7 +62,8 @@ TEXTS = {
         'btn_switch_lang': "🔄 ቋንቋ ቀይር",
         'btn_edit_phone': "✏️ ስልክ ለመቀየር",
         'location_set': "ተመዝግቧል ✅",
-        'location_not_set': "አልተመዘገበም ❌"
+        'location_not_set': "አልተመዘገበም ❌",
+        'rate_limited': "⏳ ብዙ ጥያቄዎች ተልከዋል። እባክዎ {} ሰከንድ ይጠብቁ እና እንደገና ይሞክሩ።"
     }
 }
 

@@ -25,9 +25,13 @@ logger = logging.getLogger(__name__)
 # --- STORAGE ---
 user_data = {}           
 username_map = {}        
+rate_limit_state = {}
 
 ADMIN_USERNAME = "kanzedin"
 SERVICE_MODE = 'AUTO' 
+RATE_LIMIT_WINDOW_SECONDS = 60
+RATE_LIMIT_MAX_REQUESTS = 20
+RATE_LIMIT_BLOCK_SECONDS = 60
 
 # --- HELPERS ---
 
@@ -77,6 +81,43 @@ async def check_user_exists(update, chat_id):
         }
         return False 
     return True 
+
+async def check_rate_limit(update: Update, chat_id: int) -> bool:
+    """Returns True when the user has exceeded the request limit."""
+    if is_admin(update):
+        return False
+
+    if not update.message:
+        return False
+
+    now_ts = datetime.datetime.utcnow().timestamp()
+    state = rate_limit_state.setdefault(
+        chat_id,
+        {"timestamps": [], "blocked_until": 0.0, "last_notice_at": 0.0},
+    )
+
+    if now_ts < state["blocked_until"]:
+        if now_ts - state["last_notice_at"] >= 5:
+            wait_seconds = int(state["blocked_until"] - now_ts) + 1
+            await update.message.reply_text(t(chat_id, "rate_limited").format(wait_seconds))
+            state["last_notice_at"] = now_ts
+        return True
+
+    state["timestamps"] = [
+        ts for ts in state["timestamps"] if now_ts - ts < RATE_LIMIT_WINDOW_SECONDS
+    ]
+    state["timestamps"].append(now_ts)
+
+    if len(state["timestamps"]) > RATE_LIMIT_MAX_REQUESTS:
+        state["blocked_until"] = now_ts + RATE_LIMIT_BLOCK_SECONDS
+        state["timestamps"].clear()
+        state["last_notice_at"] = now_ts
+        await update.message.reply_text(
+            t(chat_id, "rate_limited").format(RATE_LIMIT_BLOCK_SECONDS)
+        )
+        return True
+
+    return False
 
 # --- ADMIN HANDLERS ---
 
@@ -147,6 +188,7 @@ async def admin_control(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     track_username(update) # Track user
     chat_id = update.effective_chat.id
+    if await check_rate_limit(update, chat_id): return
     
     await check_user_exists(update, chat_id)
 
@@ -175,6 +217,7 @@ async def set_language(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     track_username(update)
     chat_id = update.effective_chat.id
     text = update.message.text
+    if await check_rate_limit(update, chat_id): return
 
     await check_user_exists(update, chat_id)
 
@@ -196,6 +239,7 @@ async def set_language(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def contact(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     track_username(update)
     chat_id = update.effective_chat.id
+    if await check_rate_limit(update, chat_id): return
     await check_user_exists(update, chat_id)
     
     if await check_is_closed(update, chat_id): return
@@ -209,6 +253,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     track_username(update)
     chat_id = update.effective_chat.id
     text = update.message.text
+    if await check_rate_limit(update, chat_id): return
     
     # 1. CRITICAL: Check if profile exists. 
     exists = await check_user_exists(update, chat_id)
@@ -367,6 +412,7 @@ async def show_profile(update: Update):
 async def location(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     track_username(update)
     chat_id = update.effective_chat.id
+    if await check_rate_limit(update, chat_id): return
     
     # 1. Check Profile
     exists = await check_user_exists(update, chat_id)
